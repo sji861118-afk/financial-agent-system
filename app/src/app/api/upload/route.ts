@@ -101,12 +101,12 @@ export async function POST(request: NextRequest) {
     years.sort();
 
     if (bsRows.length === 0 && isRows.length === 0) {
-      const debugInfo = ext === "pdf"
-        ? ` (PDF 텍스트 추출 결과: ${years.length}개 연도 감지, 추출 텍스트 없음 — PDF가 스캔 이미지이거나 DRM 보호 문서일 수 있습니다)`
-        : "";
+      const errorMsg = ext === "pdf"
+        ? "스캔(이미지) PDF는 지원되지 않습니다. 텍스트 선택이 가능한 PDF 또는 Excel 파일로 변환하여 업로드해주세요."
+        : "재무제표 데이터를 인식할 수 없습니다. 첫 열에 계정과목, 이후 열에 연도별 금액이 있는 형식이어야 합니다.";
       return Response.json({
         success: false,
-        error: `재무제표 데이터를 인식할 수 없습니다.${debugInfo} 첫 열에 계정과목, 이후 열에 연도별 금액이 있는 형식이어야 합니다.`,
+        error: errorMsg,
       }, { status: 400 });
     }
 
@@ -307,7 +307,7 @@ async function extractPdfLines(buffer: Buffer): Promise<string[]> {
   const data = await pdfParse(buffer);
   const text: string = data.text || "";
   if (!text || text.trim().length < 20) {
-    throw new Error("PDF에서 텍스트를 추출할 수 없습니다.");
+    throw new Error("스캔(이미지) PDF는 지원되지 않습니다. 텍스트 선택이 가능한 PDF 또는 Excel 파일로 변환하여 업로드해주세요.");
   }
   console.log("[PDF] pdf-parse fallback 사용, 텍스트 길이:", text.length);
   // 글자 단위 분리 PDF 대응: 모든 공백 제거 후 줄바꿈만으로 분리,
@@ -350,7 +350,7 @@ async function parsePdf(buffer: Buffer, divisor: number): Promise<{ bsRows: Pars
   const allLines = await extractPdfLines(buffer);
 
   if (allLines.length < 5) {
-    throw new Error("PDF에서 텍스트를 추출할 수 없습니다. 스캔 이미지 PDF이거나 DRM 보호 문서일 수 있습니다.");
+    throw new Error("스캔(이미지) PDF는 지원되지 않습니다. 텍스트 선택이 가능한 PDF 또는 Excel 파일로 변환하여 업로드해주세요.");
   }
 
   // ── 1) 연도 추출 ──
