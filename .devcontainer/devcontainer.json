@@ -1,0 +1,36 @@
+{
+  "name": "Loan App Dev",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "postCreateCommand": "cd app && npm install",
+  "forwardPorts": [3000],
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.formatOnSave": true,
+        "typescript.tsdk": "app/node_modules/typescript/lib"
+      },
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss",
+        "ms-vscode.vscode-typescript-next"
+      ]
+    },
+    "codespaces": {
+      "openFiles": ["app/src/app/financial/page.tsx"]
+    }
+  },
+  "portsAttributes": {
+    "3000": {
+      "label": "Next.js Dev Server",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "remoteEnv": {
+    "DART_API_KEY": "${localEnv:DART_API_KEY}",
+    "FIREBASE_SERVICE_ACCOUNT_KEY": "${localEnv:FIREBASE_SERVICE_ACCOUNT_KEY}",
+    "FIREBASE_CONFIG_JSON": "${localEnv:FIREBASE_CONFIG_JSON}"
+  }
+}

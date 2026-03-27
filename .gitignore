@@ -1,0 +1,79 @@
+# Git history backup (로컬 전용, 절대 push 금지)
+.git_backup_*/
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build
+.next/
+*.tsbuildinfo
+next-env.d.ts
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+.env.firebase
+.env.vercel
+*.env
+
+# Sensitive JSON (firebase keys etc)
+*firebase-adminsdk*.json
+*-firebase-*.json
+
+# Data files & DOCX generator (contain real deal data, client names)
+docx-generator/
+output/
+*.jpg
+*.jpeg
+*.png
+
+# Vercel
+.vercel/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archive & Reference (대용량 참고자료, git에 포함하지 않음)
+_archive/
+_reference/
+
+# 이전 프로젝트 복사본
+loan-app-next/
+신청서작성 자동화/
+신청서 양식 개발/
+
+# Deploy scripts (contain credentials/repo URLs)
+deploy.sh
+
+# Architecture SVG (contains internal URL)
+*architecture*.svg
+
+# Internal guide (contains deployment URL)
+app/guide.html
+
+# Internal documents (contain real names, deal structures, client data)
+docs/blueprint-loan-application-automation.md
+docs/Cowork_활용가이드_v2.md
+docs/SKILL_v2.md
+docs/2026-03-26-audit-xml-parsing-improvement.md
+여신심사_워크스페이스/
+
+# IDE
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+
+# Large files
+*.zip
+*.PDF
+*.pdf
+*.hwp
+*.pptx
+*.docx
+*.xlsx
