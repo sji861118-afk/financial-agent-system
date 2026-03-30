@@ -12,6 +12,7 @@ import {
 import { UploadStep } from "@/components/appraisal/upload-step";
 import CollateralTab from "@/components/appraisal/collateral-tab";
 import SupplyTab from "@/components/appraisal/supply-tab";
+import ComparativeTab from "@/components/appraisal/comparative-tab";
 import {
   createEmptyCase,
   type AppraisalCase,
@@ -190,9 +191,7 @@ export default function AppraisalPage() {
           </TabsContent>
 
           <TabsContent value="comparatives">
-            <div className="rounded-lg border border-dashed border-gray-300 p-10 text-center text-sm text-muted-foreground">
-              비준사례 탭 — Task 8에서 구현
-            </div>
+            <ComparativeTab data={data} onUpdate={updateData} />
           </TabsContent>
 
           <TabsContent value="market">
