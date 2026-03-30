@@ -10,6 +10,7 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { UploadStep } from "@/components/appraisal/upload-step";
+import CollateralTab from "@/components/appraisal/collateral-tab";
 import {
   createEmptyCase,
   type AppraisalCase,
@@ -180,9 +181,7 @@ export default function AppraisalPage() {
           </TabsList>
 
           <TabsContent value="collateral">
-            <div className="rounded-lg border border-dashed border-gray-300 p-10 text-center text-sm text-muted-foreground">
-              담보분석 탭 — Task 4에서 구현
-            </div>
+            <CollateralTab data={data} onUpdate={updateData} />
           </TabsContent>
 
           <TabsContent value="supply">
