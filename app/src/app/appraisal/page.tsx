@@ -13,6 +13,7 @@ import { UploadStep } from "@/components/appraisal/upload-step";
 import CollateralTab from "@/components/appraisal/collateral-tab";
 import SupplyTab from "@/components/appraisal/supply-tab";
 import ComparativeTab from "@/components/appraisal/comparative-tab";
+import MarketTab from "@/components/appraisal/market-tab";
 import {
   createEmptyCase,
   type AppraisalCase,
@@ -84,10 +85,38 @@ export default function AppraisalPage() {
         }
       }
 
+      // Call market-data API if sido is set
+      let marketResult: Partial<AppraisalCase> = {};
+      if (data.address.sido) {
+        try {
+          const marketRes = await fetch("/api/appraisal/market-data", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ address: data.address, propertyType: data.propertyType }),
+          });
+          if (marketRes.ok) {
+            const mData = await marketRes.json();
+            if (mData.success) {
+              marketResult = {
+                marketAnalysis: {
+                  location: { description: "", transportation: "", education: "", amenities: "" },
+                  realTransactions: mData.realTransactions,
+                  officialLandPrice: mData.officialLandPrice,
+                  priceComparison: { description: "", nearbyComplexes: [] },
+                },
+              };
+            }
+          }
+        } catch {
+          // market-data failed — continue
+        }
+      }
+
       setData((prev) => ({
         ...prev,
         ...parseResult,
         ...infocareResult,
+        ...marketResult,
         // preserve user-entered fields
         caseName: prev.caseName,
         borrowerName: prev.borrowerName,
@@ -195,9 +224,7 @@ export default function AppraisalPage() {
           </TabsContent>
 
           <TabsContent value="market">
-            <div className="rounded-lg border border-dashed border-gray-300 p-10 text-center text-sm text-muted-foreground">
-              시장환경 탭 — Task 9에서 구현
-            </div>
+            <MarketTab data={data} onUpdate={updateData} />
           </TabsContent>
         </Tabs>
       )}
