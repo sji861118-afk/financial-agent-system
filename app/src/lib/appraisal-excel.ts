@@ -5,8 +5,12 @@
  *   1. 담보분석      - 담보물 조사, 권리현황, 낙찰통계, 회수예상가
  *   2. 공급개요      - 사업개요, 공급테이블
  *   3. 상세담보현황  - 호실별 상세 담보 데이터
- *   4. DATA_담보     - 담보 raw 데이터
- *   5. DATA_공급     - 공급 raw 데이터
+ *   4. 비준사례      - 거래/평가 비준사례
+ *   5. 시장환경      - 입지환경, 실거래가, 공시지가, 주변시세
+ *   6. DATA_담보     - 담보 raw 데이터
+ *   7. DATA_공급     - 공급 raw 데이터
+ *   8. DATA_비준     - 비준사례 raw 데이터
+ *   9. DATA_시장     - 시장환경 raw 데이터
  */
 
 import * as ExcelJS from "exceljs";
@@ -17,6 +21,10 @@ import type {
   AuctionStatRow,
   SupplyRow,
   CollateralDetailItem,
+  ComparativeCase,
+  RealTransactionRow,
+  LandPriceRow,
+  NearbyComplex,
 } from "@/types/appraisal";
 
 // ============================================================
@@ -808,6 +816,481 @@ function buildDataSupplySheet(wb: ExcelJS.Workbook, data: AppraisalCase) {
 }
 
 // ============================================================
+// Sheet 6: 비준사례
+// ============================================================
+
+function buildComparativeSheet(wb: ExcelJS.Workbook, data: AppraisalCase) {
+  const ws = wb.addWorksheet("비준사례");
+  const comparatives: ComparativeCase[] = data.comparatives ?? [];
+
+  ws.columns = [
+    { width: 8 },  // 구분
+    { width: 22 }, // 소재지(건물명)
+    { width: 10 }, // 호수
+    { width: 12 }, // 면적(평)
+    { width: 16 }, // 금액
+    { width: 14 }, // 평단가
+    { width: 14 }, // 기준시점
+    { width: 12 }, // 평가목적 (평가사례 only)
+    { width: 16 }, // 비고
+  ];
+
+  let r = 1;
+
+  // Title
+  ws.mergeCells(r, 1, r, 9);
+  setCell(ws, r, 1, "■ 비준사례", { font: TITLE_FONT, alignment: LEFT });
+  r += 2;
+
+  // === 거래사례 ===
+  ws.mergeCells(r, 1, r, 9);
+  setCell(ws, r, 1, "거래사례", { font: SUBTITLE_FONT, alignment: LEFT });
+  r += 1;
+
+  const tradeHeaders = [
+    "구분",
+    "소재지(건물명)",
+    "호수",
+    "면적(평)",
+    "금액",
+    "평단가",
+    "기준시점",
+    "비고",
+  ];
+  setHeaderRow(ws, r, tradeHeaders);
+  r += 1;
+
+  const tradeCases = comparatives.filter((c) => c.type === "거래");
+  if (tradeCases.length === 0) {
+    ws.mergeCells(r, 1, r, 8);
+    setCell(ws, r, 1, "(거래사례 없음)", {
+      font: DATA_FONT,
+      alignment: CENTER,
+      border: BORDER_THIN,
+    });
+    r += 1;
+  } else {
+    for (const c of tradeCases) {
+      setDataRow(ws, r, [
+        c.label,
+        `${c.address}${c.buildingName ? ` (${c.buildingName})` : ""}`,
+        c.unit,
+        c.areaPyeong,
+        c.price,
+        c.pricePerPyeong,
+        c.baseDate,
+        c.source,
+      ], { numCols: [3, 4, 5] });
+      r++;
+    }
+  }
+
+  r += 2;
+
+  // === 평가사례 ===
+  ws.mergeCells(r, 1, r, 9);
+  setCell(ws, r, 1, "평가사례", { font: SUBTITLE_FONT, alignment: LEFT });
+  r += 1;
+
+  const evalHeaders = [
+    "구분",
+    "소재지(건물명)",
+    "호수",
+    "면적(평)",
+    "금액",
+    "평단가",
+    "기준시점",
+    "평가목적",
+    "비고",
+  ];
+  setHeaderRow(ws, r, evalHeaders);
+  r += 1;
+
+  const evalCases = comparatives.filter((c) => c.type === "평가");
+  if (evalCases.length === 0) {
+    ws.mergeCells(r, 1, r, 9);
+    setCell(ws, r, 1, "(평가사례 없음)", {
+      font: DATA_FONT,
+      alignment: CENTER,
+      border: BORDER_THIN,
+    });
+    r += 1;
+  } else {
+    for (const c of evalCases) {
+      setDataRow(ws, r, [
+        c.label,
+        `${c.address}${c.buildingName ? ` (${c.buildingName})` : ""}`,
+        c.unit,
+        c.areaPyeong,
+        c.price,
+        c.pricePerPyeong,
+        c.baseDate,
+        c.purpose,
+        c.source,
+      ], { numCols: [3, 4, 5] });
+      r++;
+    }
+  }
+}
+
+// ============================================================
+// Sheet 7: 시장환경
+// ============================================================
+
+function buildMarketSheet(wb: ExcelJS.Workbook, data: AppraisalCase) {
+  const ws = wb.addWorksheet("시장환경");
+  const m = data.marketAnalysis;
+
+  ws.columns = [
+    { width: 16 }, // A
+    { width: 20 }, // B
+    { width: 14 }, // C
+    { width: 16 }, // D
+    { width: 14 }, // E
+    { width: 14 }, // F
+    { width: 14 }, // G
+    { width: 14 }, // H
+  ];
+
+  let r = 1;
+
+  // Title
+  ws.mergeCells(r, 1, r, 8);
+  setCell(ws, r, 1, "■ 시장환경 분석", { font: TITLE_FONT, alignment: LEFT });
+  r += 2;
+
+  // === 1. 입지환경 ===
+  ws.mergeCells(r, 1, r, 8);
+  setCell(ws, r, 1, "1. 입지환경", { font: SUBTITLE_FONT, alignment: LEFT });
+  r += 1;
+
+  const locationKv: [string, string][] = [
+    ["입지 종합", m.location.description],
+    ["교통 환경", m.location.transportation],
+    ["교육 환경", m.location.education],
+    ["생활편의시설", m.location.amenities],
+  ];
+
+  for (const [label, value] of locationKv) {
+    setCell(ws, r, 1, label, {
+      font: LABEL_FONT,
+      fill: LABEL_FILL,
+      alignment: CENTER,
+      border: BORDER_THIN,
+    });
+    ws.mergeCells(r, 2, r, 8);
+    const cell = ws.getCell(r, 2);
+    cell.value = value;
+    cell.font = DATA_FONT;
+    cell.alignment = { ...LEFT, wrapText: true };
+    cell.border = BORDER_THIN;
+    ws.getRow(r).height = 40;
+    r++;
+  }
+
+  r += 2;
+
+  // === 2. 실거래가 ===
+  ws.mergeCells(r, 1, r, 6);
+  setCell(ws, r, 1, "2. 실거래가", { font: SUBTITLE_FONT, alignment: LEFT });
+  ws.mergeCells(r, 7, r, 8);
+  setCell(ws, r, 7, `출처: ${m.realTransactions.source}  조회일: ${m.realTransactions.retrievedAt}`, {
+    font: { name: FONT, size: 9, italic: true, color: { argb: "FF888888" } },
+    alignment: RIGHT,
+  });
+  r += 1;
+
+  const rtHeaders = ["소재지", "건물명", "면적(㎡)", "거래가", "평단가", "거래일", "층"];
+  setHeaderRow(ws, r, rtHeaders);
+  r += 1;
+
+  const rtRows: RealTransactionRow[] = m.realTransactions.data ?? [];
+  if (rtRows.length === 0) {
+    ws.mergeCells(r, 1, r, 7);
+    setCell(ws, r, 1, "(실거래가 데이터 없음)", {
+      font: DATA_FONT,
+      alignment: CENTER,
+      border: BORDER_THIN,
+    });
+    r += 1;
+  } else {
+    for (const row of rtRows) {
+      setDataRow(ws, r, [
+        row.address,
+        row.buildingName,
+        row.areaSqm,
+        row.price,
+        row.pricePerPyeong,
+        row.transactionDate,
+        row.floor,
+      ], { numCols: [2, 3, 4] });
+      r++;
+    }
+  }
+
+  r += 2;
+
+  // === 3. 공시지가 ===
+  ws.mergeCells(r, 1, r, 2);
+  setCell(ws, r, 1, "3. 공시지가", { font: SUBTITLE_FONT, alignment: LEFT });
+  ws.mergeCells(r, 3, r, 8);
+  setCell(ws, r, 3, `출처: ${m.officialLandPrice.source}  조회일: ${m.officialLandPrice.retrievedAt}`, {
+    font: { name: FONT, size: 9, italic: true, color: { argb: "FF888888" } },
+    alignment: RIGHT,
+  });
+  r += 1;
+
+  const lpHeaders = ["소재지", "㎡당 가격", "연도", "증감률(%)"];
+  setHeaderRow(ws, r, lpHeaders);
+  r += 1;
+
+  const lpRows: LandPriceRow[] = m.officialLandPrice.data ?? [];
+  if (lpRows.length === 0) {
+    ws.mergeCells(r, 1, r, 4);
+    setCell(ws, r, 1, "(공시지가 데이터 없음)", {
+      font: DATA_FONT,
+      alignment: CENTER,
+      border: BORDER_THIN,
+    });
+    r += 1;
+  } else {
+    for (const row of lpRows) {
+      setDataRow(ws, r, [
+        row.address,
+        row.pricePerSqm,
+        row.year,
+        row.changeRate,
+      ], { numCols: [1, 2], pctCols: [3] });
+      r++;
+    }
+  }
+
+  r += 2;
+
+  // === 4. 주변 시세 분석 ===
+  ws.mergeCells(r, 1, r, 8);
+  setCell(ws, r, 1, "4. 주변 시세 분석", { font: SUBTITLE_FONT, alignment: LEFT });
+  r += 1;
+
+  if (m.priceComparison.description) {
+    ws.mergeCells(r, 1, r, 8);
+    const descCell = ws.getCell(r, 1);
+    descCell.value = m.priceComparison.description;
+    descCell.font = DATA_FONT;
+    descCell.alignment = { ...LEFT, wrapText: true };
+    descCell.border = BORDER_THIN;
+    ws.getRow(r).height = 40;
+    r += 1;
+  }
+
+  const ncHeaders = ["단지명", "거리", "면적(㎡)", "평단가", "준공년도", "분양률(%)", "출처"];
+  setHeaderRow(ws, r, ncHeaders);
+  r += 1;
+
+  const ncRows: NearbyComplex[] = m.priceComparison.nearbyComplexes ?? [];
+  if (ncRows.length === 0) {
+    ws.mergeCells(r, 1, r, 7);
+    setCell(ws, r, 1, "(주변 시세 데이터 없음)", {
+      font: DATA_FONT,
+      alignment: CENTER,
+      border: BORDER_THIN,
+    });
+    r += 1;
+  } else {
+    for (const row of ncRows) {
+      setDataRow(ws, r, [
+        row.name,
+        row.distance,
+        row.areaSqm,
+        row.pricePerPyeong,
+        row.completionYear,
+        row.salesRate,
+        row.source,
+      ], { numCols: [2, 3, 4], pctCols: [5] });
+      r++;
+    }
+  }
+}
+
+// ============================================================
+// Sheet 8: DATA_비준
+// ============================================================
+
+function buildDataComparativeSheet(wb: ExcelJS.Workbook, data: AppraisalCase) {
+  const ws = wb.addWorksheet("DATA_비준");
+  const comparatives: ComparativeCase[] = data.comparatives ?? [];
+
+  ws.columns = [
+    { width: 8 },
+    { width: 8 },
+    { width: 22 },
+    { width: 16 },
+    { width: 10 },
+    { width: 12 },
+    { width: 16 },
+    { width: 14 },
+    { width: 14 },
+    { width: 12 },
+    { width: 16 },
+    { width: 16 },
+  ];
+
+  let r = 1;
+
+  const headers = [
+    "type",
+    "label",
+    "address",
+    "buildingName",
+    "unit",
+    "areaPyeong",
+    "price",
+    "pricePerPyeong",
+    "baseDate",
+    "purpose",
+    "usage",
+    "source",
+  ];
+
+  headers.forEach((h, i) => {
+    setCell(ws, r, i + 1, h, { font: LABEL_FONT });
+  });
+  r++;
+
+  for (const c of comparatives) {
+    const vals: (string | number)[] = [
+      c.type,
+      c.label,
+      c.address,
+      c.buildingName,
+      c.unit,
+      c.areaPyeong,
+      c.price,
+      c.pricePerPyeong,
+      c.baseDate,
+      c.purpose,
+      c.usage,
+      c.source,
+    ];
+    vals.forEach((v, i) => {
+      setCell(ws, r, i + 1, v, { font: DATA_FONT });
+    });
+    r++;
+  }
+}
+
+// ============================================================
+// Sheet 9: DATA_시장
+// ============================================================
+
+function buildDataMarketSheet(wb: ExcelJS.Workbook, data: AppraisalCase) {
+  const ws = wb.addWorksheet("DATA_시장");
+  const m = data.marketAnalysis;
+
+  ws.columns = [
+    { width: 18 },
+    { width: 24 },
+    { width: 14 },
+    { width: 16 },
+    { width: 14 },
+    { width: 14 },
+    { width: 16 },
+  ];
+
+  let r = 1;
+  const addKv = (key: string, val: string | number) => {
+    setCell(ws, r, 1, key, { font: LABEL_FONT });
+    setCell(ws, r, 2, val, { font: DATA_FONT });
+    r++;
+  };
+
+  // Section 1: 입지환경
+  setCell(ws, r, 1, "[입지환경]", { font: SUBTITLE_FONT });
+  r++;
+  addKv("입지 종합", m.location.description);
+  addKv("교통 환경", m.location.transportation);
+  addKv("교육 환경", m.location.education);
+  addKv("생활편의시설", m.location.amenities);
+  r++;
+
+  // Section 2: 실거래가
+  setCell(ws, r, 1, "[실거래가]", { font: SUBTITLE_FONT });
+  setCell(ws, r, 2, `출처: ${m.realTransactions.source}`, { font: DATA_FONT });
+  setCell(ws, r, 3, `조회일: ${m.realTransactions.retrievedAt}`, { font: DATA_FONT });
+  r++;
+
+  const rtHeaders = ["address", "buildingName", "areaSqm", "price", "pricePerPyeong", "transactionDate", "floor"];
+  rtHeaders.forEach((h, i) => {
+    setCell(ws, r, i + 1, h, { font: LABEL_FONT });
+  });
+  r++;
+
+  for (const row of (m.realTransactions.data ?? [])) {
+    const vals: (string | number)[] = [
+      row.address,
+      row.buildingName,
+      row.areaSqm,
+      row.price,
+      row.pricePerPyeong,
+      row.transactionDate,
+      row.floor,
+    ];
+    vals.forEach((v, i) => setCell(ws, r, i + 1, v, { font: DATA_FONT }));
+    r++;
+  }
+  r++;
+
+  // Section 3: 공시지가
+  setCell(ws, r, 1, "[공시지가]", { font: SUBTITLE_FONT });
+  setCell(ws, r, 2, `출처: ${m.officialLandPrice.source}`, { font: DATA_FONT });
+  setCell(ws, r, 3, `조회일: ${m.officialLandPrice.retrievedAt}`, { font: DATA_FONT });
+  r++;
+
+  const lpHeaders = ["address", "pricePerSqm", "year", "changeRate"];
+  lpHeaders.forEach((h, i) => {
+    setCell(ws, r, i + 1, h, { font: LABEL_FONT });
+  });
+  r++;
+
+  for (const row of (m.officialLandPrice.data ?? [])) {
+    const vals: (string | number)[] = [
+      row.address,
+      row.pricePerSqm,
+      row.year,
+      row.changeRate,
+    ];
+    vals.forEach((v, i) => setCell(ws, r, i + 1, v, { font: DATA_FONT }));
+    r++;
+  }
+  r++;
+
+  // Section 4: 주변시세
+  setCell(ws, r, 1, "[주변시세]", { font: SUBTITLE_FONT });
+  setCell(ws, r, 2, m.priceComparison.description, { font: DATA_FONT });
+  r++;
+
+  const ncHeaders = ["name", "distance", "areaSqm", "pricePerPyeong", "completionYear", "salesRate", "source"];
+  ncHeaders.forEach((h, i) => {
+    setCell(ws, r, i + 1, h, { font: LABEL_FONT });
+  });
+  r++;
+
+  for (const row of (m.priceComparison.nearbyComplexes ?? [])) {
+    const vals: (string | number)[] = [
+      row.name,
+      row.distance,
+      row.areaSqm,
+      row.pricePerPyeong,
+      row.completionYear,
+      row.salesRate,
+      row.source,
+    ];
+    vals.forEach((v, i) => setCell(ws, r, i + 1, v, { font: DATA_FONT }));
+    r++;
+  }
+}
+
+// ============================================================
 // Main export
 // ============================================================
 
@@ -819,8 +1302,12 @@ export async function generateAppraisalExcel(
   buildCollateralSheet(wb, data);
   buildSupplySheet(wb, data);
   buildDetailSheet(wb, data);
+  buildComparativeSheet(wb, data);
+  buildMarketSheet(wb, data);
   buildDataCollateralSheet(wb, data);
   buildDataSupplySheet(wb, data);
+  buildDataComparativeSheet(wb, data);
+  buildDataMarketSheet(wb, data);
 
   const arrayBuffer = await wb.xlsx.writeBuffer();
   return Buffer.from(arrayBuffer);
