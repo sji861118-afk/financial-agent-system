@@ -36,11 +36,20 @@ function buildEquityPledge(data: LoanApplication): SectionContent | null {
   if (ep.valuationStatus?.length) {
     for (const v of ep.valuationStatus) {
       content.push(bodyText(`(${v.method})`));
+      // Support both items[] format and flat-field format
+      const vAny = v as any;
+      const items: { label: string; value: string | number }[] = v.items ?? Object.entries(vAny)
+        .filter(([k]) => !['method', 'items'].includes(k))
+        .map(([k, val]) => ({ label: k, value: String(val ?? '-') }));
+      if (items.length === 0) {
+        content.push(tbdText('[TBD: 평가 중]'), emptyLine());
+        continue;
+      }
       const valRows = [
         row([headerCell('항목'), headerCell('금액(백만원)')]),
-        ...v.items.map(i => row([
-          dataCell(String(i.label), { bold: String(i.label).includes('Equity Value') }),
-          dataCell(String(i.value), { align: AlignmentType.RIGHT, bold: String(i.label).includes('Equity Value') }),
+        ...items.map(i => row([
+          dataCell(String(i.label), { bold: String(i.label).includes('Equity Value') || String(i.label).includes('equityValue') }),
+          dataCell(String(i.value), { align: AlignmentType.RIGHT, bold: String(i.label).includes('Equity Value') || String(i.label).includes('equityValue') }),
         ])),
       ];
       content.push(new Table({ width: { size: 80, type: WidthType.PERCENTAGE }, rows: valRows }), emptyLine());
@@ -77,12 +86,21 @@ function buildEquityPledge(data: LoanApplication): SectionContent | null {
 
   // 5. Guarantor income (optional)
   if (ep.guarantorIncome) {
-    content.push(subTitle(`보증인 소득분석 (${ep.guarantorIncome.name})`));
-    const gRows = [
-      row([headerCell('항목'), headerCell('내용')]),
-      ...ep.guarantorIncome.items.map(i => row([dataCell(i.label), dataCell(i.value)])),
-    ];
-    content.push(new Table({ width: { size: 80, type: WidthType.PERCENTAGE }, rows: gRows }), emptyLine());
+    const gi = ep.guarantorIncome as any;
+    content.push(subTitle(`보증인 소득분석 (${gi.name})`));
+    // Support both items[] format and flat-field format
+    const giItems: { label: string; value: string }[] = gi.items ?? Object.entries(gi)
+      .filter(([k]) => !['name', 'items'].includes(k))
+      .map(([k, v]) => ({ label: k, value: String(v ?? '-') }));
+    if (giItems.length > 0) {
+      const gRows = [
+        row([headerCell('항목'), headerCell('내용')]),
+        ...giItems.map(i => row([dataCell(i.label), dataCell(i.value)])),
+      ];
+      content.push(new Table({ width: { size: 80, type: WidthType.PERCENTAGE }, rows: gRows }), emptyLine());
+    } else {
+      content.push(emptyLine());
+    }
   }
 
   // 6. Consolidated financials (optional)
@@ -93,24 +111,43 @@ function buildEquityPledge(data: LoanApplication): SectionContent | null {
 
   // 7. Cash flow (optional)
   if (ep.cashFlow) {
-    content.push(pageBreak(), sectionTitle('영업현금흐름 분석'), emptyLine());
-    for (const entity of ep.cashFlow.entities) {
-      content.push(subTitle(entity.name), unitLabel(`(단위:백만원 / 출처: ${entity.source})`));
-      const cfRows = [
-        row([headerCell('항목', { width: 25 }), ...entity.quarters.map(q => headerCell(q)), headerCell('연간합계')]),
-        ...entity.items.map(item => row([
-          dataCell(item.indent ? `${'  '.repeat(item.indent)}${item.label}` : item.label, { bold: item.bold }),
-          ...item.values.map(v => dataCell(String(v), { align: AlignmentType.RIGHT, bold: item.bold })),
-          dataCell(String(item.annual ?? '-'), { align: AlignmentType.RIGHT, bold: item.bold }),
-        ])),
-      ];
-      content.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: cfRows }), emptyLine());
+    const cfAny = ep.cashFlow as any;
+    // Support both entities[] format and named-key format (e.g., { techmate: {...}, youme: {...} })
+    const entities = ep.cashFlow.entities ?? Object.entries(cfAny)
+      .filter(([k, v]) => k !== 'consolidated' && k !== 'consolidatedMetrics' && v && typeof v === 'object' && (v as any).items)
+      .map(([k, v]) => {
+        const ent = v as any;
+        return { name: k, source: 'cash-flow', period: '', quarters: ent.quarters ?? [], items: ent.items ?? [] };
+      });
+    if (entities.length > 0) {
+      content.push(pageBreak(), sectionTitle('영업현금흐름 분석'), emptyLine());
+      for (const entity of entities) {
+        const quarters = entity.quarters ?? [];
+        content.push(subTitle(entity.name), unitLabel(`(단위:백만원 / 출처: ${entity.source || 'cash-flow'})`));
+        const cfRows = [
+          row([headerCell('항목', { width: 25 }), ...quarters.map((q: string) => headerCell(q))]),
+          ...entity.items.map((item: any) => row([
+            dataCell(item.indent ? `${'  '.repeat(item.indent)}${item.label}` : item.label, { bold: item.bold }),
+            ...item.values.map((v: any) => dataCell(v != null ? String(v) : '-', { align: AlignmentType.RIGHT, bold: item.bold })),
+          ])),
+        ];
+        content.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: cfRows }), emptyLine());
+      }
     }
-    if (ep.cashFlow.consolidatedMetrics?.length) {
+    // consolidatedMetrics or consolidated block
+    const consolidatedMetrics = ep.cashFlow.consolidatedMetrics ?? (cfAny.consolidated?.items
+      ? cfAny.consolidated.items.map((i: any) => ({
+          label: i.label,
+          value: i.total != null ? String(i.total) : '-',
+          note: cfAny.consolidated?.note,
+        }))
+      : null);
+    if (consolidatedMetrics?.length) {
+      if (entities.length === 0) content.push(pageBreak(), sectionTitle('영업현금흐름 분석'), emptyLine());
       content.push(subTitle('합산 연간 핵심 지표'));
       const mRows = [
         row([headerCell('지표'), headerCell('수치'), headerCell('비고')]),
-        ...ep.cashFlow.consolidatedMetrics.map(m => row([
+        ...consolidatedMetrics.map((m: any) => row([
           dataCell(m.label), dataCell(m.value), dataCell(m.note || ''),
         ])),
       ];
@@ -120,16 +157,40 @@ function buildEquityPledge(data: LoanApplication): SectionContent | null {
 
   // 8. Provisioning rates (optional)
   if (ep.provisioningRates) {
-    content.push(subTitle('대손충당금 설정률'));
-    const pr = ep.provisioningRates;
-    const prRows = [
-      row([headerCell('구분'), ...pr.years.map(y => headerCell(y))]),
-      ...pr.items.map(item => row([
-        dataCell(item.category),
-        ...pr.years.map(y => dataCell(String(item.values[y] ?? '-'), { align: AlignmentType.RIGHT })),
-      ])),
-    ];
-    content.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: prRows }), emptyLine());
+    const prAny = ep.provisioningRates as any;
+    // Support both standard format (items/years) and named-entity format (techmate/youme with rates[])
+    if (prAny.items && prAny.years) {
+      content.push(subTitle('대손충당금 설정률'));
+      const pr = ep.provisioningRates;
+      const prRows = [
+        row([headerCell('구분'), ...pr.years.map(y => headerCell(y))]),
+        ...pr.items.map(item => row([
+          dataCell(item.category),
+          ...pr.years.map(y => dataCell(String(item.values[y] ?? '-'), { align: AlignmentType.RIGHT })),
+        ])),
+      ];
+      content.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: prRows }), emptyLine());
+    } else {
+      // Named-entity format: render each entity's rates table separately
+      const entityKeys = Object.keys(prAny).filter(k => prAny[k]?.rates);
+      for (const key of entityKeys) {
+        const ent = prAny[key];
+        content.push(subTitle(`대손충당금 설정률 (${key})`));
+        if (ent.note) content.push(bodyText(ent.note));
+        const rates: any[] = ent.rates;
+        if (rates?.length) {
+          const cols = Object.keys(rates[0]).filter(c => c !== 'delinquencyBracket');
+          const rateRows = [
+            row([headerCell('연체구간'), ...cols.map(c => headerCell(c))]),
+            ...rates.map(r => row([
+              dataCell(r.delinquencyBracket),
+              ...cols.map(c => dataCell(String(r[c] ?? '-'), { align: AlignmentType.CENTER })),
+            ])),
+          ];
+          content.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: rateRows }), emptyLine());
+        }
+      }
+    }
   }
 
   return content;

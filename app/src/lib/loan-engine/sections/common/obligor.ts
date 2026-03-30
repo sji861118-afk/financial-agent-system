@@ -129,7 +129,7 @@ function buildObligorBorrower(data: LoanApplication): SectionContent {
       ...b.shareholders.map(s => row([
         dataCell(s.name), dataCell(s.stockType),
         dataCell(fmt(s.shares), { align: AlignmentType.RIGHT }),
-        dataCell(`${s.ownershipPct.toFixed(2)}%`, { align: AlignmentType.CENTER }),
+        dataCell(s.ownershipPct != null ? `${s.ownershipPct.toFixed(2)}%` : '-', { align: AlignmentType.CENTER }),
         dataCell(s.note || ''),
       ])),
     ];
