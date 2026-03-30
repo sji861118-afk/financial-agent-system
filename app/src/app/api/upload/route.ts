@@ -251,57 +251,185 @@ function splitCombined(allRows: ParsedRow[]): { bsRows: ParsedRow[]; isRows: Par
   return { bsRows, isRows };
 }
 
-// ── PDF 텍스트 줄 추출 (pdfjs-dist 좌표 기반 → pdf-parse fallback) ──
-async function extractPdfLines(buffer: Buffer): Promise<string[]> {
-  // 1차: pdfjs-dist 좌표 기반 (글자 분리 PDF 완벽 대응)
+// ── pdfjs-dist 폴리필 ──
+function ensurePdfjsPolyfills() {
+  if (typeof globalThis.DOMMatrix === "undefined") {
+    (globalThis as any).DOMMatrix = class DOMMatrix {
+      a: number; b: number; c: number; d: number; e: number; f: number;
+      constructor(init?: number[]) {
+        if (Array.isArray(init)) { this.a=init[0]??1;this.b=init[1]??0;this.c=init[2]??0;this.d=init[3]??1;this.e=init[4]??0;this.f=init[5]??0; }
+        else { this.a=1;this.b=0;this.c=0;this.d=1;this.e=0;this.f=0; }
+      }
+      get is2D() { return true; }
+      isIdentity() { return this.a===1&&this.b===0&&this.c===0&&this.d===1&&this.e===0&&this.f===0; }
+    };
+  }
+  if (typeof globalThis.Path2D === "undefined") {
+    (globalThis as any).Path2D = class Path2D { constructor() {} };
+  }
+}
+
+/** Y좌표별 행 → X좌표 정렬된 셀 배열 */
+interface PdfRow {
+  y: number;
+  cells: { x: number; text: string }[];
+}
+
+/**
+ * pdfjs-dist 좌표 기반 구조적 추출
+ * - Y좌표로 행 그룹핑
+ * - X좌표 갭으로 컬럼 경계 자동 탐지
+ * - 계정명 / 당기금액 / 전기금액 3컬럼 분리
+ */
+async function extractPdfStructured(buffer: Buffer): Promise<{
+  rows: Array<{ account: string; values: string[] }>;
+  years: string[];
+} | null> {
   try {
-    if (typeof globalThis.DOMMatrix === "undefined") {
-      (globalThis as any).DOMMatrix = class DOMMatrix {
-        a: number; b: number; c: number; d: number; e: number; f: number;
-        constructor(init?: number[]) {
-          if (Array.isArray(init)) { this.a=init[0]??1;this.b=init[1]??0;this.c=init[2]??0;this.d=init[3]??1;this.e=init[4]??0;this.f=init[5]??0; }
-          else { this.a=1;this.b=0;this.c=0;this.d=1;this.e=0;this.f=0; }
-        }
-        get is2D() { return true; }
-        isIdentity() { return this.a===1&&this.b===0&&this.c===0&&this.d===1&&this.e===0&&this.f===0; }
-      };
-    }
-    if (typeof globalThis.Path2D === "undefined") {
-      (globalThis as any).Path2D = class Path2D { constructor() {} };
-    }
-
+    ensurePdfjsPolyfills();
     const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const getDocument = pdfjs.getDocument;
-    const doc = await getDocument({ data: new Uint8Array(buffer) }).promise;
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
 
-    const allLines: string[] = [];
+    // 전체 페이지에서 Y좌표별 행 수집
+    const allPdfRows: PdfRow[] = [];
     for (let p = 1; p <= doc.numPages; p++) {
       const page = await doc.getPage(p);
       const tc = await page.getTextContent();
       const items = (tc.items as any[]).filter((it: any) => it.str && it.str.trim());
-      const rows: Record<number, { x: number; text: string }[]> = {};
+      const rowMap: Record<number, { x: number; text: string }[]> = {};
       for (const it of items) {
         const y = Math.round(it.transform[5]);
-        if (!rows[y]) rows[y] = [];
-        rows[y].push({ x: it.transform[4], text: it.str.trim() });
+        if (!rowMap[y]) rowMap[y] = [];
+        rowMap[y].push({ x: Math.round(it.transform[4]), text: it.str.trim() });
       }
-      const sortedYs = Object.keys(rows).map(Number).sort((a, b) => b - a);
+      // Y 내림차순 정렬 (페이지 상단→하단 = Y값 큰→작은)
+      const sortedYs = Object.keys(rowMap).map(Number).sort((a, b) => b - a);
       for (const y of sortedYs) {
-        const cells = rows[y].sort((a, b) => a.x - b.x);
-        allLines.push(cells.map((c) => c.text).join(""));
+        allPdfRows.push({ y, cells: rowMap[y].sort((a, b) => a.x - b.x) });
       }
     }
     doc.destroy();
 
-    if (allLines.length >= 5) {
-      console.log("[PDF] pdfjs-dist 좌표 기반 추출 성공:", allLines.length, "줄");
-      return allLines;
-    }
-  } catch (e: any) {
-    console.warn("[PDF] pdfjs-dist 실패, pdf-parse fallback:", e?.message || e);
-  }
+    if (allPdfRows.length < 5) return null;
 
-  // 2차: pdf-parse 텍스트 기반 fallback (원래 작동하던 방식 그대로)
+    // ── 1) 컬럼 경계 자동 탐지 ──
+    // 계정명이 있는 행에서 "계정명 끝 X"와 "첫 번째 숫자 시작 X" 사이의 갭을 찾음
+    const gapCandidates: number[] = [];
+    for (const row of allPdfRows) {
+      const allText = row.cells.map((c) => c.text).join("");
+      // 계정명+숫자가 있는 행만 분석
+      if (!/[가-힣]/.test(allText) || !/\d/.test(allText)) continue;
+      // 마지막 한글/괄호 셀의 X끝 vs 첫 숫자 셀의 X시작
+      let lastAccountX = 0;
+      let firstNumX = Infinity;
+      for (const cell of row.cells) {
+        if (/[가-힣)）]/.test(cell.text)) lastAccountX = Math.max(lastAccountX, cell.x + cell.text.length * 8);
+        if (/^\d/.test(cell.text) || /^\([\d,]/.test(cell.text)) firstNumX = Math.min(firstNumX, cell.x);
+      }
+      if (firstNumX > lastAccountX && firstNumX < Infinity) {
+        gapCandidates.push(Math.round((lastAccountX + firstNumX) / 2));
+      }
+    }
+
+    // 컬럼1 경계: gapCandidates의 중앙값 (기본값 210)
+    gapCandidates.sort((a, b) => a - b);
+    const col1Boundary = gapCandidates.length > 0
+      ? gapCandidates[Math.floor(gapCandidates.length / 2)]
+      : 210;
+
+    // 컬럼2/3 경계: 숫자 셀들의 X좌표 분포에서 큰 갭 탐지
+    const numXCoords: number[] = [];
+    for (const row of allPdfRows) {
+      for (const cell of row.cells) {
+        if (cell.x >= col1Boundary && /[\d,()\-]/.test(cell.text)) {
+          numXCoords.push(cell.x);
+        }
+      }
+    }
+    numXCoords.sort((a, b) => a - b);
+    // 숫자 X좌표의 중앙 갭 탐지
+    let col2Boundary = col1Boundary + 180; // 기본값
+    if (numXCoords.length >= 4) {
+      let maxGap = 0;
+      let gapPos = col2Boundary;
+      for (let i = 1; i < numXCoords.length; i++) {
+        const gap = numXCoords[i] - numXCoords[i - 1];
+        if (gap > maxGap && numXCoords[i] > col1Boundary + 50) {
+          maxGap = gap;
+          gapPos = Math.round((numXCoords[i - 1] + numXCoords[i]) / 2);
+        }
+      }
+      if (maxGap > 20) col2Boundary = gapPos;
+    }
+
+    console.log(`[PDF] 컬럼 경계 탐지: 계정명 < ${col1Boundary} | 당기 < ${col2Boundary} | 전기`);
+
+    // ── 2) 연도 추출 ──
+    const years: string[] = [];
+    const yearSet = new Set<string>();
+    for (const row of allPdfRows) {
+      const fullLine = row.cells.map((c) => c.text).join(" ");
+      const m = fullLine.match(/20[12]\d/g);
+      if (m && m.length >= 2) {
+        for (const y of m) {
+          if (parseInt(y) >= 2018 && parseInt(y) <= 2030 && !yearSet.has(y)) {
+            yearSet.add(y); years.push(y);
+          }
+        }
+        if (years.length >= 2) break;
+      }
+    }
+    // 빈도 기반 fallback
+    if (years.length === 0) {
+      const allText = allPdfRows.map((r) => r.cells.map((c) => c.text).join("")).join("\n");
+      const allYrs = allText.match(/20[12]\d/g) || [];
+      const freq: Record<string, number> = {};
+      for (const y of allYrs) freq[y] = (freq[y] || 0) + 1;
+      const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);
+      for (const [y] of sorted.slice(0, 3)) {
+        if (!yearSet.has(y)) { years.push(y); yearSet.add(y); }
+      }
+    }
+    years.sort();
+
+    // ── 3) 행별 3컬럼 분리 → 구조화 ──
+    const skipRe = /^(제\d|단위|회사명|과목|금액|재무상태표$|손익계산서$|포괄손익계산서$|결산|회계|주석|감사|독립|페이지|Page|처분예정|처분확정|본재무제표)/;
+    const result: Array<{ account: string; values: string[] }> = [];
+
+    for (const row of allPdfRows) {
+      // 계정명 컬럼: X < col1Boundary
+      const accountParts = row.cells.filter((c) => c.x < col1Boundary).map((c) => c.text);
+      const account = accountParts.join("").replace(/\s/g, "");
+      if (!account || !/[가-힣]/.test(account)) continue;
+      if (skipRe.test(account)) continue;
+
+      // 당기 금액: col1Boundary ≤ X < col2Boundary
+      const val1Parts = row.cells.filter((c) => c.x >= col1Boundary && c.x < col2Boundary).map((c) => c.text);
+      const val1 = val1Parts.join("").replace(/\s/g, "");
+
+      // 전기 금액: X ≥ col2Boundary
+      const val2Parts = row.cells.filter((c) => c.x >= col2Boundary).map((c) => c.text);
+      const val2 = val2Parts.join("").replace(/\s/g, "");
+
+      // 금액이 하나도 없으면 (헤더 행 등) 스킵
+      if (!val1 && !val2) continue;
+
+      result.push({ account, values: [val1, val2].slice(0, years.length) });
+    }
+
+    console.log(`[PDF] 좌표 구조적 추출: ${result.length}행, 연도: ${years.join(",")}`);
+    return { rows: result, years };
+  } catch (e: any) {
+    console.warn("[PDF] pdfjs-dist 구조적 추출 실패:", e?.message || e);
+    return null;
+  }
+}
+
+/**
+ * pdf-parse 텍스트 기반 fallback (기존 방식)
+ * pdfjs-dist 실패 시 사용
+ */
+async function extractPdfLinesFallback(buffer: Buffer): Promise<string[]> {
   const mod = await import("pdf-parse");
   const pdfParse = (mod as any).default || mod;
   const data = await pdfParse(buffer);
@@ -310,54 +438,67 @@ async function extractPdfLines(buffer: Buffer): Promise<string[]> {
     throw new Error("스캔(이미지) PDF는 지원되지 않습니다. 텍스트 선택이 가능한 PDF 또는 Excel 파일로 변환하여 업로드해주세요.");
   }
   console.log("[PDF] pdf-parse fallback 사용, 텍스트 길이:", text.length);
-  // 글자 단위 분리 PDF 대응: 모든 공백 제거 후 줄바꿈만으로 분리,
-  // 그 다음 짧은 줄을 이전 줄에 병합하여 완전한 계정행 재구성
   const rawLines = text.split(/\n/).map((l: string) => l.replace(/\s/g, "")).filter((l: string) => l.length > 0);
-
-  // 1단계: 짧은 줄(5글자 미만)은 이전 줄에 병합
   const step1: string[] = [];
   for (const line of rawLines) {
-    if (line.length < 5 && step1.length > 0) {
-      step1[step1.length - 1] += line;
-    } else {
-      step1.push(line);
-    }
+    if (line.length < 5 && step1.length > 0) step1[step1.length - 1] += line;
+    else step1.push(line);
   }
-
-  // 2단계: 숫자만 있는 줄을 이전 한글 줄에 병합
   const merged: string[] = [];
   let current = "";
   for (const line of step1) {
     const hasKorean = /[가-힣]/.test(line);
     const isNumOnly = /^[\d,.()\-]+$/.test(line);
-    if (hasKorean) {
-      if (current) merged.push(current);
-      current = line;
-    } else if (isNumOnly && current) {
-      current += line;
-    } else {
-      if (current) merged.push(current);
-      current = line;
-    }
+    if (hasKorean) { if (current) merged.push(current); current = line; }
+    else if (isNumOnly && current) { current += line; }
+    else { if (current) merged.push(current); current = line; }
   }
   if (current) merged.push(current);
-  console.log("[PDF] pdf-parse fallback 추출:", merged.length, "줄");
   return merged;
 }
 
-// ── PDF 파싱 ──
+// ── PDF 파싱 (메인) ──
 async function parsePdf(buffer: Buffer, divisor: number): Promise<{ bsRows: ParsedRow[]; isRows: ParsedRow[]; years: string[] }> {
-  const allLines = await extractPdfLines(buffer);
+  // 1차: pdfjs-dist X좌표 기반 구조적 추출
+  const structured = await extractPdfStructured(buffer);
+  if (structured && structured.rows.length >= 3) {
+    const allRows: ParsedRow[] = [];
+    for (const row of structured.rows) {
+      let account = row.account;
+      // 로마숫자/번호 접두사 제거
+      account = account.replace(/^[IⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩivxlcdm]+\./, "");
+      account = account.replace(/^\(\d+\)/, "");
+      account = account.replace(/^\d+\./, "");
+      if (!account || !/[가-힣]/.test(account)) continue;
+      const koreanChars = account.match(/[가-힣]/g);
+      if (!koreanChars || koreanChars.length < 2) continue;
+      if (account.length > 25) continue;
+
+      const parsed: ParsedRow = { account };
+      for (let yi = 0; yi < structured.years.length && yi < row.values.length; yi++) {
+        const raw = row.values[yi];
+        if (!raw || raw === "-") { parsed[structured.years[yi]] = "-"; continue; }
+        parsed[structured.years[yi]] = formatAmount(raw, divisor);
+      }
+      allRows.push(parsed);
+    }
+    console.log("[PDF] 구조적 추출 → 파싱 행:", allRows.length, "/ 연도:", structured.years);
+    const split = splitCombined(allRows);
+    return { bsRows: split.bsRows, isRows: split.isRows, years: structured.years };
+  }
+
+  // 2차: pdf-parse 텍스트 fallback
+  console.log("[PDF] 구조적 추출 실패/부족, pdf-parse fallback");
+  const allLines = await extractPdfLinesFallback(buffer);
 
   if (allLines.length < 5) {
     throw new Error("스캔(이미지) PDF는 지원되지 않습니다. 텍스트 선택이 가능한 PDF 또는 Excel 파일로 변환하여 업로드해주세요.");
   }
 
-  // ── 1) 연도 추출 ──
+  // 연도 추출
   const years: string[] = [];
   const yearSet = new Set<string>();
   const fullText = allLines.join("\n");
-
   for (const line of allLines) {
     const m = line.match(/20[12]\d/g);
     if (m && m.length >= 2) {
@@ -369,7 +510,6 @@ async function parsePdf(buffer: Buffer, divisor: number): Promise<{ bsRows: Pars
       if (years.length >= 2) break;
     }
   }
-  // 빈도 기반 fallback
   if (years.length === 0) {
     const allYrs = fullText.match(/20[12]\d/g) || [];
     const freq: Record<string, number> = {};
@@ -380,31 +520,23 @@ async function parsePdf(buffer: Buffer, divisor: number): Promise<{ bsRows: Pars
     }
   }
 
-  // ── 2) 계정 행 파싱 ──
+  // 계정 행 파싱
   const allRows: ParsedRow[] = [];
   const skipRe = /^(제\d|단위|회사명|과목|금액|재무상태표|손익계산서|포괄손익|결산|회계|주석|감사|독립|페이지|Page|처분예정|처분확정)/;
-
   for (const line of allLines) {
-    // 공백 제거 후 계정과목 + 숫자 분리
     const cleaned = line.replace(/\s/g, "");
-    // 계정명 끝(한글/괄호) + 숫자 시작 지점 분리
     const match = cleaned.match(/^(.*?[가-힣)）])([\d,()\-].*)$/);
     if (!match) continue;
-
     let account = match[1];
     const numPart = match[2];
-
     if (skipRe.test(account)) continue;
     if (account.length > 25) continue;
-    // 로마숫자/번호 접두사 제거
     account = account.replace(/^[IⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\./, "");
     account = account.replace(/^\(\d+\)/, "");
     account = account.replace(/^\d+\./, "");
     if (!account || !/[가-힣]/.test(account)) continue;
     const koreanChars = account.match(/[가-힣]/g);
     if (!koreanChars || koreanChars.length < 2) continue;
-
-    // 금액 추출
     const amounts: string[] = [];
     const amountRe = /\([\d,]+\)|\d{1,3}(,\d{3})*/g;
     let m2;
@@ -412,7 +544,6 @@ async function parsePdf(buffer: Buffer, divisor: number): Promise<{ bsRows: Pars
       if (m2[0].length >= 1) amounts.push(m2[0]);
     }
     if (amounts.length === 0) continue;
-
     const parsed: ParsedRow = { account };
     for (let yi = 0; yi < years.length && yi < amounts.length; yi++) {
       parsed[years[yi]] = formatAmount(amounts[yi], divisor);
@@ -420,16 +551,16 @@ async function parsePdf(buffer: Buffer, divisor: number): Promise<{ bsRows: Pars
     allRows.push(parsed);
   }
 
-  console.log("[PDF] 좌표기반 행:", allLines.length, "/ 파싱 행:", allRows.length, "/ 연도:", years);
-
+  console.log("[PDF] fallback 파싱 행:", allRows.length, "/ 연도:", years);
   const split = splitCombined(allRows);
   const sortedYears = [...years].sort();
   return { bsRows: split.bsRows, isRows: split.isRows, years: sortedYears };
 }
 
 function formatAmount(raw: string, divisor: number): string {
-  const negative = (raw.startsWith("(") && raw.endsWith(")"));
-  const numStr = raw.replace(/[(),\s]/g, "");
+  // 음수 표현: (1,234) 또는 -1,234
+  const negative = (raw.startsWith("(") && raw.endsWith(")")) || raw.startsWith("-");
+  const numStr = raw.replace(/[(),\s\-]/g, "").replace(/,/g, "");
   const num = parseFloat(numStr);
   if (isNaN(num)) return raw;
   const val = negative ? -num : num;
