@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/tabs";
 import { UploadStep } from "@/components/appraisal/upload-step";
 import CollateralTab from "@/components/appraisal/collateral-tab";
+import SupplyTab from "@/components/appraisal/supply-tab";
 import {
   createEmptyCase,
   type AppraisalCase,
@@ -185,9 +186,7 @@ export default function AppraisalPage() {
           </TabsContent>
 
           <TabsContent value="supply">
-            <div className="rounded-lg border border-dashed border-gray-300 p-10 text-center text-sm text-muted-foreground">
-              공급개요 탭 — Task 6에서 구현
-            </div>
+            <SupplyTab data={data} onUpdate={updateData} />
           </TabsContent>
 
           <TabsContent value="comparatives">
