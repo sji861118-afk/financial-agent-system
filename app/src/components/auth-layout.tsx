@@ -8,10 +8,10 @@ export function AuthLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [checked, setChecked] = useState(false);
-  const isLoginPage = pathname === "/login";
+  const isPublicPage = pathname === "/login" || pathname === "/";
 
   useEffect(() => {
-    if (isLoginPage) { setChecked(true); return; }
+    if (isPublicPage) { setChecked(true); return; }
     (async () => {
       try {
         const res = await fetch("/api/auth/me");
@@ -25,15 +25,15 @@ export function AuthLayout({ children }: { children: React.ReactNode }) {
       }
       setChecked(true);
     })();
-  }, [isLoginPage, router]);
+  }, [isPublicPage, router]);
 
-  if (isLoginPage) {
+  if (isPublicPage) {
     return <>{children}</>;
   }
 
   if (!checked) {
     return (
-      <div className="flex h-screen items-center justify-center bg-gray-50">
+      <div className="flex h-screen items-center justify-center bg-background">
         <div className="size-8 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
       </div>
     );

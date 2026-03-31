@@ -41,7 +41,7 @@ interface DailyLimit {
 }
 
 const navItems = [
-  { href: "/", label: "대시보드", icon: LayoutDashboard },
+  { href: "/dashboard", label: "대시보드", icon: LayoutDashboard },
   { href: "/financial", label: "기업 재무현황", icon: BarChart3 },
   { href: "/appraisal", label: "감정평가서 분석", icon: FileSearch },
   { href: "/files", label: "파일 관리", icon: FolderOpen },
@@ -60,7 +60,7 @@ function NavLinks({ onNavigate, user }: { onNavigate?: () => void; user: AuthUse
       {items.map((item) => {
         const isActive =
           pathname === item.href ||
-          (item.href !== "/" && pathname.startsWith(item.href));
+          (item.href !== "/dashboard" && pathname.startsWith(item.href));
         return (
           <Link
             key={item.href}
@@ -85,12 +85,16 @@ function NavLinks({ onNavigate, user }: { onNavigate?: () => void; user: AuthUse
 function SidebarLogo() {
   return (
     <div className="flex items-center gap-3 px-6 py-5">
-      <div className="flex size-9 items-center justify-center rounded-lg bg-indigo-500">
-        <Building2 className="size-5 text-white" />
+      <div className="flex size-9 items-center justify-center rounded-[10px] bg-gradient-to-br from-indigo-600 to-blue-500">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="size-5 text-white">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+          <path d="M2 17l10 5 10-5"/>
+          <path d="M2 12l10 5 10-5"/>
+        </svg>
       </div>
       <div>
-        <h1 className="text-base font-bold text-white">대출 자동화</h1>
-        <p className="text-xs text-slate-400">Loan Automation</p>
+        <h1 className="text-base font-bold text-white" style={{ fontFamily: 'var(--font-en)' }}>CF1</h1>
+        <p className="text-xs text-slate-400">Credit Flow One</p>
       </div>
     </div>
   );
@@ -279,8 +283,14 @@ export function MobileNav() {
         </SheetContent>
       </Sheet>
       <div className="flex items-center gap-2">
-        <Building2 className="size-5 text-indigo-400" />
-        <span className="text-sm font-bold text-white">대출 자동화</span>
+        <div className="flex size-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-600 to-blue-500">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="size-4 text-white">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+            <path d="M2 17l10 5 10-5"/>
+            <path d="M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <span className="text-sm font-bold text-white" style={{ fontFamily: 'var(--font-en)' }}>CF1</span>
       </div>
       {user && (
         <div className="ml-auto flex items-center gap-2">
