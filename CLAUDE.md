@@ -38,6 +38,10 @@
 - [2026-03-26] 감사보고서 XML 주석번호("4,5,6,7") 셀이 `/[\d,]{3,}/`에 매칭 → 금액으로 오인식. `/\d{3,}/` + 주석 패턴 선 필터 필요
 - [2026-03-26] 감사보고서 간 계정명 표기 차이(주석 공백, 번호접두사) → merge 실패의 주원인. normalizeAcct() 통합 필수
 - [2026-03-26] 총차입금 계산 시 차입금 바로 다음 행의 현재가치할인차금(음수)을 감지하여 순액 반영해야 정확
+- [2026-03-31] Vercel Hobby 플랜 기본 serverless timeout 10초 → export const maxDuration = 60 으로 확장 필요 (비상장 감사보고서 XML 파싱 등)
+- [2026-03-31] Next.js 16에서 middleware.ts → proxy.ts로 컨벤션 변경 (빌드 출력: "ƒ Proxy (Middleware)")
+- [2026-03-31] 비상장 외감법인은 fnlttSinglAcntAll/fnlttSinglAcnt API 데이터 없음 → 감사보고서 XML 파싱만 가능
+- [2026-03-31] 삼일회계법인 가치산정: 금융회사는 FCFE(자기자본 현금흐름) 방식 사용, FCFF(WACC) 아님
 
 ## Current Progress
 ### 완료 (2026-03-26)
@@ -56,6 +60,15 @@
   - mergeAuditResults 중복계정(대손충당금 등) 순서 보존 매칭
   - 총차입금에 현재가치할인차금 순액 반영
 
+### 완료 (2026-03-31)
+- loan-engine equity-pledge 플러그인 완성 (삼일 FCFE DCF, valuation summary, sensitivity, peer group, WACC 산출)
+- conditions-security 섹션 업데이트 (인출선행조건, 인출후행조건, 기한이익상실사유 렌더링)
+- techmate-full.json 실데이터 투입 (DART 개별+연결 BS/IS, IM 사업조건, 자금용도, SPC 구조)
+- 테크메이트홀딩스 재무제표(full detail) 추가
+- 소버린제이엘홀딩스 제거 (본건 무관)
+- Vercel maxDuration=60 timeout fix 배포 (commit 237e9e6)
+- **최종 DOCX 출력: 36KB, 2,098 paragraphs, 43 tables, 14 page breaks**
+
 ### 미확인/잠재 이슈
 - PDF 업로드 IS 파싱이 Vercel에서 실제 작동하는지 최종 확인 필요 (pdf-parse fallback 줄 재구성)
 - 파일 제거 시 파싱 결과 유지 로직 (남은 파일의 데이터가 정확한지)
@@ -65,7 +78,8 @@
 - 계정명이 완전히 다른 경우(공사미수금↔미수금) 자동 merge 불가
 
 ## Next Session Context
-1. **[긴급] 감사보고서 파싱 실데이터 검증**: 테스트 대상 기업 재조회하여 연도별 데이터 정확성 확인
-2. PDF 업로드 IS 파싱: pdfjs-dist가 Vercel에서 작동하면 좌표 기반(정확), 실패하면 pdf-parse fallback(줄 재구성)
-3. DART 분기보고서: 누적 매출 정확성 검증 필요
-4. 배포 체크리스트: app/ 수정 → 빌드 확인 → 배포 레포 복사 → develop→master→push → `vercel ls` Ready 확인
+1. loan-engine equity-pledge/conditions-security 변경 커밋 (현재 uncommitted 상태)
+2. Word에서 DOCX 열어 서식/내용 최종 검수 (표 정렬, 금액 단위, 페이지 나눔)
+3. 유미캐피탈·테크메이트홀딩스 '25년 가결산 재무데이터 추가 (현재 테크메이트만 삼일 보고서 기준)
+4. TBD 항목 확정 후 반영: 대출금리, 금리산출표, 취급수수료
+5. 배포 체크리스트: app/ 수정 → 빌드 확인 → loan-app-next 복사 → `npx vercel --prod` → Ready 확인
