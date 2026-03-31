@@ -8,6 +8,8 @@ import { generateExcelReport } from "@/lib/excel-generator";
 import { getDataStore } from "@/lib/firebase-admin";
 import { logActivity } from "@/lib/auth";
 import * as fs from "fs";
+
+export const maxDuration = 60;
 import * as path from "path";
 import * as os from "os";
 

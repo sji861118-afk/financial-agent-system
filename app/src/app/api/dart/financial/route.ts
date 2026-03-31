@@ -13,6 +13,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
+// Vercel Hobby 플랜 최대 60초, Pro 플랜 최대 300초
+export const maxDuration = 60;
+
 const OUTPUT_DIR = path.join(os.tmpdir(), "loan-app-output");
 
 function ensureOutputDir() {
