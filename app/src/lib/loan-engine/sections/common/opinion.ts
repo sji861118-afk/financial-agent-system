@@ -6,7 +6,7 @@ import { registerSection } from '../registry';
 function buildOpinion(data: LoanApplication): SectionContent {
   const branch = data.meta.branch;
   const content: SectionContent = [
-    subTitle(`3. 신청점 종합의견 (${branch})`),
+    subTitle(`7. 신청점 종합의견 (${branch})`),
     emptyLine(),
   ];
 

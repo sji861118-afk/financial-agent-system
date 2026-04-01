@@ -227,10 +227,36 @@ function generateBSAnalysis(fs: FinancialStatements): string {
   const totalDebtPrev = findVal(bs, '부채총계', prev);
   const totalEquityCur = findVal(bs, '자본총계', cur);
   const totalEquityPrev = findVal(bs, '자본총계', prev);
-  const borrowCur = findAny(bs, ['차입금', '차입부채'], cur);
-  const borrowPrev = findAny(bs, ['차입금', '차입부채'], prev);
-  const bondCur = findVal(bs, '사채', cur);
-  const bondPrev = findVal(bs, '사채', prev);
+  // 총차입금 = 단기차입금 + 유동성장기차입금 + 장기차입금 + 사채
+  const sumBorrowings = (items: StatementLineItem[], yearKey: string): { total: number; parts: { name: string; val: number }[] } => {
+    const parts: { name: string; val: number }[] = [];
+    const found = new Set<number>(); // 이미 매칭된 item index 추적
+    // 정확도 높은 것부터 검색 (유동성장기차입금 → 장기차입금 순서 중요)
+    const targets = ['단기차입금', '유동성장기차입금', '유동성사채', '장기차입금', '사채'];
+    for (const acct of targets) {
+      for (let i = 0; i < items.length; i++) {
+        if (found.has(i)) continue;
+        const clean = items[i].account.replace(/[\s()]/g, '');
+        // 장기차입금은 정확 매칭 (유동성장기차입금 제외)
+        const exactMatch = acct === '장기차입금'
+          ? clean === '장기차입금'
+          : acct === '사채'
+            ? clean === '사채'
+            : clean.includes(acct.replace(/[\s()]/g, ''));
+        if (exactMatch) {
+          const v = resolveValue(items[i], yearKey);
+          if (typeof v === 'number' && v > 0) {
+            parts.push({ name: acct, val: v });
+            found.add(i);
+          }
+          break;
+        }
+      }
+    }
+    return { total: parts.reduce((s, p) => s + p.val, 0), parts };
+  };
+  const borrowCurInfo = sumBorrowings(bs, cur);
+  const borrowPrevInfo = sumBorrowings(bs, prev);
   const loanCur = findAny(bs, ['대출채권', '대출금'], cur);
   const loanPrev = findAny(bs, ['대출채권', '대출금'], prev);
   const provisionCur = findAny(bs, ['대손충당금'], cur);
@@ -260,19 +286,15 @@ function generateBSAnalysis(fs: FinancialStatements): string {
     const debtYoy = yoyPct(totalDebtCur, totalDebtPrev);
     if (debtYoy) debtLine += `(${debtYoy})`;
 
-    // Borrowing breakdown
-    const totalBorrow = (borrowCur ?? 0) + (bondCur ?? 0);
-    if (totalBorrow > 0) {
-      const parts: string[] = [];
-      if (borrowCur) parts.push(`차입금 ${fmt(borrowCur)}`);
-      if (bondCur) parts.push(`사채 ${fmt(bondCur)}`);
-      debtLine += `. 차입구조: ${parts.join(' + ')} = 총 ${fmt(totalBorrow)}백만원`;
+    // Borrowing breakdown (총차입금 = 단기+유동성장기+장기+사채)
+    if (borrowCurInfo.total > 0) {
+      const partStrs = borrowCurInfo.parts.map(p => `${p.name} ${fmt(p.val)}`);
+      debtLine += `. 총차입금 ${fmt(borrowCurInfo.total)}백만원`;
+      if (partStrs.length > 1) debtLine += `(${partStrs.join(' + ')})`;
 
-      // Borrowing growth direction
-      const totalBorrowPrev = (borrowPrev ?? 0) + (bondPrev ?? 0);
-      if (totalBorrowPrev > 0) {
-        const bYoy = yoyPct(totalBorrow, totalBorrowPrev);
-        if (bYoy) debtLine += `(${bYoy})`;
+      if (borrowPrevInfo.total > 0) {
+        const bYoy = yoyPct(borrowCurInfo.total, borrowPrevInfo.total);
+        if (bYoy) debtLine += ` ${bYoy}`;
       }
     }
     lines.push(debtLine);

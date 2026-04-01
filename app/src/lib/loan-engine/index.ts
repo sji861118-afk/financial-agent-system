@@ -12,3 +12,4 @@ export type {
 
 // Profile exports
 export { equityPledgeProfile } from './profiles/equity-pledge';
+export { unsoldCollateralProfile } from './profiles/unsold-collateral';
