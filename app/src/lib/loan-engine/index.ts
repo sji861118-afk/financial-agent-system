@@ -1,5 +1,5 @@
 // app/src/lib/loan-engine/index.ts
-export { generateDocx } from './generator.js';
+export { generateDocx } from './generator';
 export type {
   LoanApplication, LoanType, LoanTypeProfile,
   SectionId, SectionBuilder, SectionContent,
@@ -8,7 +8,7 @@ export type {
   CollateralSecurityItem, LoanConditions, SyndicateInfo,
   InterestRateBreakdown, FinancialStatements, RelatedEntityFinancials,
   BorrowingDetail, UnresolvedItem,
-} from './types.js';
+} from './types';
 
 // Profile exports
-export { equityPledgeProfile } from './profiles/equity-pledge.js';
+export { equityPledgeProfile } from './profiles/equity-pledge';

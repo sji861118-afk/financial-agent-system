@@ -1,8 +1,8 @@
 // app/src/lib/loan-engine/sections/common/interest-rate.ts
 import { Table, WidthType, AlignmentType } from 'docx';
-import type { LoanApplication, SectionContent } from '../../types.js';
-import { subTitle, headerCell, dataCell, bodyText, tbdText, emptyLine, row } from '../helpers.js';
-import { registerSection } from '../registry.js';
+import type { LoanApplication, SectionContent } from '../../types';
+import { subTitle, headerCell, dataCell, bodyText, tbdText, emptyLine, row } from '../helpers';
+import { registerSection } from '../registry';
 
 function buildInterestRate(data: LoanApplication): SectionContent {
   const r = data.interestRate;

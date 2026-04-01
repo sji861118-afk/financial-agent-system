@@ -1,5 +1,5 @@
 // app/src/lib/loan-engine/sections/registry.ts
-import type { SectionId, SectionBuilder } from '../types.js';
+import type { SectionId, SectionBuilder } from '../types';
 
 const registry = new Map<SectionId, SectionBuilder>();
 

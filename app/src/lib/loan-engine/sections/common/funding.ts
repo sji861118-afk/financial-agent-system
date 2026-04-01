@@ -1,6 +1,6 @@
 // app/src/lib/loan-engine/sections/common/funding.ts
-import type { LoanApplication, SectionContent } from '../../types.js';
-import { registerSection } from '../registry.js';
+import type { LoanApplication, SectionContent } from '../../types';
+import { registerSection } from '../registry';
 
 // funding is handled inline by basic-terms.ts (cashIn/cashOut + detailedFunding)
 // This separate builder is for the extended "소요자금 조달·지출계획" in PF/construction

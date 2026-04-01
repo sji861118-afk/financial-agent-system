@@ -55,6 +55,7 @@ export interface LoanApplication {
     borrower: FinancialStatements;
     subsidiaries?: RelatedEntityFinancials[];
     relatedCompanies?: RelatedEntityFinancials[];
+    consolidatedStatements?: FinancialStatements;
   };
   borrowings: BorrowingDetail[];
   typeSpecific: TypeSpecificData;
@@ -149,6 +150,9 @@ export interface LoanConditions {
   personal?: string[];          // 인적담보 조건
   interestReserve?: string[];   // 이자유보 조건
   general?: string[];           // 기타 일반 조건
+  precedentConditions?: string[];      // 인출선행조건
+  subsequentConditions?: string[];     // 인출후행조건
+  accelerationEvents?: string[];       // 기한이익상실사유
   approvalValidity?: string;    // 승인유효기간
 }
 

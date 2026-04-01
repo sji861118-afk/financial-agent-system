@@ -1,8 +1,8 @@
 // app/src/lib/loan-engine/sections/common/checklist.ts
 import { Table, WidthType, AlignmentType } from 'docx';
-import type { LoanApplication, SectionContent } from '../../types.js';
-import { sectionTitle, headerCell, dataCell, emptyLine, row } from '../helpers.js';
-import { registerSection } from '../registry.js';
+import type { LoanApplication, SectionContent } from '../../types';
+import { sectionTitle, headerCell, dataCell, emptyLine, row } from '../helpers';
+import { registerSection } from '../registry';
 
 const DEFAULT_ITEMS = [
   '차주 신용도 및 재무건전성 확인',

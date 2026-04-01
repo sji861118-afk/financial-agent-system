@@ -1,8 +1,8 @@
 // app/src/lib/loan-engine/sections/common/header.ts
 import { Paragraph, Table, TextRun, AlignmentType, WidthType } from 'docx';
-import type { LoanApplication, SectionContent } from '../../types.js';
-import { FONT, FONT_SIZE_TITLE, headerCell, dataCell, emptyLine, row } from '../helpers.js';
-import { registerSection } from '../registry.js';
+import type { LoanApplication, SectionContent } from '../../types';
+import { FONT, FONT_SIZE_TITLE, headerCell, dataCell, emptyLine, row } from '../helpers';
+import { registerSection } from '../registry';
 
 function buildHeader(data: LoanApplication): SectionContent {
   return [

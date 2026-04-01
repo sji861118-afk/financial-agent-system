@@ -1,8 +1,8 @@
 // app/src/lib/loan-engine/sections/common/syndicate.ts
 import { Table, WidthType, AlignmentType } from 'docx';
-import type { LoanApplication, SectionContent } from '../../types.js';
-import { subTitle, unitLabel, headerCell, dataCell, emptyLine, row, fmt } from '../helpers.js';
-import { registerSection } from '../registry.js';
+import type { LoanApplication, SectionContent } from '../../types';
+import { subTitle, unitLabel, headerCell, dataCell, emptyLine, row, fmt } from '../helpers';
+import { registerSection } from '../registry';
 
 function buildSyndicate(data: LoanApplication): SectionContent | null {
   if (!data.syndicate) return null;

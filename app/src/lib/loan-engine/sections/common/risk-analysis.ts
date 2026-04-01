@@ -1,8 +1,8 @@
 // app/src/lib/loan-engine/sections/common/risk-analysis.ts
 import { Table, WidthType, AlignmentType } from 'docx';
-import type { LoanApplication, SectionContent } from '../../types.js';
-import { sectionTitle, bodyText, tbdText, emptyLine, pageBreak } from '../helpers.js';
-import { registerSection } from '../registry.js';
+import type { LoanApplication, SectionContent } from '../../types';
+import { sectionTitle, bodyText, tbdText, emptyLine, pageBreak } from '../helpers';
+import { registerSection } from '../registry';
 
 function buildRiskAnalysis(data: LoanApplication): SectionContent {
   const content: SectionContent = [pageBreak(), sectionTitle('이자 상환능력 및 리스크 분석'), emptyLine()];

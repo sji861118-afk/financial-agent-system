@@ -1,26 +1,26 @@
 // app/src/lib/loan-engine/generator.ts
 import { Document, Packer, convertInchesToTwip } from 'docx';
-import type { LoanApplication, LoanTypeProfile, SectionContent } from './types.js';
-import { getSection } from './sections/registry.js';
-import { pageBreak } from './sections/helpers.js';
+import type { LoanApplication, LoanTypeProfile, SectionContent } from './types';
+import { getSection } from './sections/registry';
+import { pageBreak } from './sections/helpers';
 
 // Import all section builders to trigger registration
-import './sections/common/header.js';
-import './sections/common/overview.js';
-import './sections/common/basic-terms.js';
-import './sections/common/syndicate.js';
-import './sections/common/funding.js';
-import './sections/common/conditions-security.js';
-import './sections/common/interest-rate.js';
-import './sections/common/structure.js';
-import './sections/common/opinion.js';
-import './sections/common/obligor.js';
-import './sections/common/borrowings.js';
-import './sections/common/financial-opinion.js';
-import './sections/common/risk-analysis.js';
-import './sections/common/checklist.js';
-import './sections/common/tbd-summary.js';
-import './sections/plugins/equity-pledge.js';
+import './sections/common/header';
+import './sections/common/overview';
+import './sections/common/basic-terms';
+import './sections/common/syndicate';
+import './sections/common/funding';
+import './sections/common/conditions-security';
+import './sections/common/interest-rate';
+import './sections/common/structure';
+import './sections/common/opinion';
+import './sections/common/obligor';
+import './sections/common/borrowings';
+import './sections/common/financial-opinion';
+import './sections/common/risk-analysis';
+import './sections/common/checklist';
+import './sections/common/tbd-summary';
+import './sections/plugins/equity-pledge';
 
 export interface GenerateOptions {
   profile: LoanTypeProfile;

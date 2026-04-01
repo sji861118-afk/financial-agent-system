@@ -1,12 +1,12 @@
 // app/src/lib/loan-engine/sections/plugins/equity-pledge.ts
 import { Table, WidthType, AlignmentType } from 'docx';
-import type { LoanApplication, SectionContent, EquityPledgeData } from '../../types.js';
+import type { LoanApplication, SectionContent, EquityPledgeData } from '../../types';
 import {
   sectionTitle, subTitle, unitLabel, bodyText, tbdText, headerCell, dataCell,
   emptyLine, row, fmt, pageBreak,
-} from '../helpers.js';
-import { registerSection } from '../registry.js';
-import { renderStatements } from '../common/obligor.js';
+} from '../helpers';
+import { registerSection } from '../registry';
+import { renderStatements } from '../common/obligor';
 
 // ─── Korean label map for valuation fields ───
 const VALUATION_LABELS: Record<string, string> = {

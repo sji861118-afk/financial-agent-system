@@ -1,7 +1,7 @@
 // app/src/lib/loan-engine/sections/common/opinion.ts
-import type { LoanApplication, SectionContent } from '../../types.js';
-import { subTitle, bulletText, bodyText, tbdText, emptyLine } from '../helpers.js';
-import { registerSection } from '../registry.js';
+import type { LoanApplication, SectionContent } from '../../types';
+import { subTitle, bulletText, bodyText, tbdText, emptyLine } from '../helpers';
+import { registerSection } from '../registry';
 
 function buildOpinion(data: LoanApplication): SectionContent {
   const branch = data.meta.branch;

@@ -1,5 +1,5 @@
 // app/src/lib/loan-engine/profiles/equity-pledge.ts
-import type { LoanTypeProfile } from '../types.js';
+import type { LoanTypeProfile } from '../types';
 
 export const equityPledgeProfile: LoanTypeProfile = {
   type: 'equity-pledge',

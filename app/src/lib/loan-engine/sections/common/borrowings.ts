@@ -1,8 +1,8 @@
 // app/src/lib/loan-engine/sections/common/borrowings.ts
 import { Table, WidthType, AlignmentType } from 'docx';
-import type { LoanApplication, SectionContent, BorrowingDetail } from '../../types.js';
-import { subTitle, unitLabel, headerCell, dataCell, bodyText, emptyLine, row, fmt } from '../helpers.js';
-import { registerSection } from '../registry.js';
+import type { LoanApplication, SectionContent, BorrowingDetail } from '../../types';
+import { subTitle, unitLabel, headerCell, dataCell, bodyText, emptyLine, row, fmt } from '../helpers';
+import { registerSection } from '../registry';
 
 function renderBorrowingDetail(detail: BorrowingDetail, prefix: string): SectionContent {
   const content: SectionContent = [

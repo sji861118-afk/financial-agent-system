@@ -1,8 +1,8 @@
 // app/src/lib/loan-engine/sections/common/tbd-summary.ts
 import { Table, WidthType, AlignmentType } from 'docx';
-import type { LoanApplication, SectionContent } from '../../types.js';
-import { sectionTitle, headerCell, dataCell, emptyLine, row } from '../helpers.js';
-import { registerSection } from '../registry.js';
+import type { LoanApplication, SectionContent } from '../../types';
+import { sectionTitle, headerCell, dataCell, emptyLine, row } from '../helpers';
+import { registerSection } from '../registry';
 
 function buildTBDSummary(data: LoanApplication): SectionContent | null {
   if (data.unresolvedItems.length === 0) return null;

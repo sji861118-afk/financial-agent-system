@@ -1,7 +1,7 @@
 // app/src/lib/loan-engine/sections/common/overview.ts
-import type { LoanApplication, SectionContent } from '../../types.js';
-import { sectionTitle, bodyText, emptyLine, fmt } from '../helpers.js';
-import { registerSection } from '../registry.js';
+import type { LoanApplication, SectionContent } from '../../types';
+import { sectionTitle, bodyText, emptyLine, fmt } from '../helpers';
+import { registerSection } from '../registry';
 
 function buildOverview(data: LoanApplication): SectionContent {
   const b = data.borrower;

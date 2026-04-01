@@ -1,7 +1,7 @@
 // app/src/lib/loan-engine/sections/common/structure.ts
-import type { LoanApplication, SectionContent } from '../../types.js';
-import { sectionTitle, tbdText, emptyLine } from '../helpers.js';
-import { registerSection } from '../registry.js';
+import type { LoanApplication, SectionContent } from '../../types';
+import { sectionTitle, tbdText, emptyLine } from '../helpers';
+import { registerSection } from '../registry';
 
 function buildStructure(data: LoanApplication): SectionContent | null {
   // Phase 2+: render from typeSpecific data or image
