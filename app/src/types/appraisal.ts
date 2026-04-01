@@ -190,6 +190,39 @@ export interface ComparativeCase {
   baseDate: string;
 }
 
+/** 비준사례 건물 단위 (건물 정보 + 하위 거래/평가 행) */
+export interface ComparativeBuilding {
+  label: string;
+  category: string;
+  address: string;
+  buildingName: string;
+  landAreaSqm: number;
+  grossAreaSqm: number;
+  buildingAreaSqm: number;
+  coverageFloorRatio: string;
+  scale: string;
+  approvalDate: string;
+  source: string;
+  transactions: ComparativeCase[];
+  appraisals: ComparativeCase[];
+}
+
+/** 감정평가서 내 경매통계 인용 */
+export interface AuctionQuote {
+  region: string;
+  period: string;
+  rows: {
+    usage: string;
+    totalAppraisal: number;
+    totalBid: number;
+    bidRate: number;
+    totalCases: number;
+    bidCases: number;
+    bidCaseRate: number;
+  }[];
+  source: string;
+}
+
 export interface RealTransactionRow {
   address: string;
   buildingName: string;
@@ -261,8 +294,16 @@ export interface AppraisalCase {
 export interface AppraisalParseResult {
   collateral: Partial<CollateralAnalysis>;
   comparatives: ComparativeCase[];
+  comparativeBuildings: ComparativeBuilding[];
   supply: Partial<SupplyOverview>;
   collateralDetail: CollateralDetailItem[];
+  auctionQuote: AuctionQuote | null;
+  valuationSummary: {
+    comparisonTotal: number;
+    incomeTotal: number;
+    finalValue: number;
+    method: string;
+  } | null;
   confidence: Record<string, number>;
   warnings: string[];
 }

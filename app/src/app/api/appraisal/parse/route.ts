@@ -1,6 +1,6 @@
 import { type NextRequest } from "next/server";
 import { parseAppraisalPdf } from "@/lib/appraisal-parser";
-import type { AppraisalParseResult, CollateralAnalysis, ComparativeCase, SupplyOverview, CollateralDetailItem } from "@/types/appraisal";
+import type { AppraisalParseResult, CollateralAnalysis, ComparativeCase, ComparativeBuilding, SupplyOverview, CollateralDetailItem, AuctionQuote } from "@/types/appraisal";
 
 export async function POST(request: NextRequest) {
   try {
@@ -42,6 +42,9 @@ export async function POST(request: NextRequest) {
     const mergedComparatives: ComparativeCase[] = [];
     let mergedSupply: Partial<SupplyOverview> = {};
     const mergedDetail: CollateralDetailItem[] = [];
+    const mergedBuildings: ComparativeBuilding[] = [];
+    let mergedAuctionQuote: AuctionQuote | null = null;
+    let mergedValuation: AppraisalParseResult["valuationSummary"] = null;
     const mergedConfidence: Record<string, number> = {};
     const allWarnings: string[] = [];
 
@@ -78,6 +81,21 @@ export async function POST(request: NextRequest) {
         mergedDetail.push(...result.collateralDetail);
       }
 
+      // 비준사례 건물: 누적
+      if (result.comparativeBuildings.length > 0) {
+        mergedBuildings.push(...result.comparativeBuildings);
+      }
+
+      // 경매통계: 첫 번째 성공 결과 사용
+      if (!mergedAuctionQuote && result.auctionQuote) {
+        mergedAuctionQuote = result.auctionQuote;
+      }
+
+      // 시산가액: 첫 번째 성공 결과 사용
+      if (!mergedValuation && result.valuationSummary) {
+        mergedValuation = result.valuationSummary;
+      }
+
       // confidence 최대값
       for (const [key, val] of Object.entries(result.confidence)) {
         mergedConfidence[key] = Math.max(mergedConfidence[key] || 0, val);
@@ -92,8 +110,11 @@ export async function POST(request: NextRequest) {
     const merged: AppraisalParseResult = {
       collateral: mergedCollateral,
       comparatives: mergedComparatives,
+      comparativeBuildings: mergedBuildings,
       supply: mergedSupply,
       collateralDetail: mergedDetail,
+      auctionQuote: mergedAuctionQuote,
+      valuationSummary: mergedValuation,
       confidence: mergedConfidence,
       warnings: allWarnings,
     };
