@@ -68,7 +68,7 @@ export default function ReviewListPage() {
         <Link href="/review/new">
           <Button>
             <Plus className="mr-2 size-4" />
-            새 여신 접수
+            초안 생성
           </Button>
         </Link>
       </div>

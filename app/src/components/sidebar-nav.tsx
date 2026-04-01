@@ -15,6 +15,7 @@ import {
   LogOut,
   User,
   KeyRound,
+  ClipboardCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,6 +43,7 @@ interface DailyLimit {
 
 const navItems = [
   { href: "/dashboard", label: "대시보드", icon: LayoutDashboard },
+  { href: "/review", label: "여신검토", icon: ClipboardCheck },
   { href: "/financial", label: "기업 재무현황", icon: BarChart3 },
   { href: "/appraisal", label: "감정평가서 분석", icon: FileSearch },
   { href: "/files", label: "파일 관리", icon: FolderOpen },
