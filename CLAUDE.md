@@ -12,6 +12,8 @@
 │   │   │   ├── dart-api.ts          # DART 전자공시 API
 │   │   │   ├── excel-generator.ts   # Excel 보고서 생성
 │   │   │   ├── financial-analyzer.ts # 재무비율 분석
+│   │   │   ├── appraisal-parser.ts  # 감정평가서 PDF 파서 v2
+│   │   │   ├── appraisal-excel.ts   # 감정평가서 Excel 시트 생성
 │   │   │   └── ...
 │   │   └── types/         # TypeScript 타입 정의
 │   └── public/            # 정적 파일
@@ -28,6 +30,11 @@
 - **배포 = 두 레포 동기화**: app/ 수정 → loan-app-next에 복사 → develop commit → master merge → push
 - **push 후 반드시 `npx vercel ls`로 `● Ready` 확인** — 확인 전 "배포 완료"라고 말하지 않기
 
+## Development Rules
+- Firestore 초기화 코드 절대 복제 금지 — 반드시 `@/lib/firebase-admin`에서 import하여 사용
+- Python 모듈 포팅 시 컨벤션: dataclass→interface, Enum→string union, dict→Record, 함수명은 camelCase 유지
+- 3개 이상 파일 생성/수정 후 반드시 `cd app && npx tsc --noEmit`으로 타입 검증 후 진행
+
 ## Lessons Learned
 - [2026-03-26] 새 패키지 import 시 반드시 `npm install --save` 먼저 — 로컬 node_modules에 있어도 Vercel에서 설치 안됨
 - [2026-03-26] 브라우저용 라이브러리(pdfjs-dist 등)를 서버에서 쓸 때 DOMMatrix/Path2D 등 폴리필 필요 여부 사전 확인
@@ -42,6 +49,12 @@
 - [2026-03-31] Next.js 16에서 middleware.ts → proxy.ts로 컨벤션 변경 (빌드 출력: "ƒ Proxy (Middleware)")
 - [2026-03-31] 비상장 외감법인은 fnlttSinglAcntAll/fnlttSinglAcnt API 데이터 없음 → 감사보고서 XML 파싱만 가능
 - [2026-03-31] 삼일회계법인 가치산정: 금융회사는 FCFE(자기자본 현금흐름) 방식 사용, FCFF(WACC) 아님
+- [2026-04-01] PDF 텍스트에 NULL 문자(\u0000) 포함 → 정규식 매칭 실패. 파싱 전 `.replace(/\u0000/g, " ")` 전처리 필수
+- [2026-04-01] 연결 숫자 파싱: "78,022,000,0002,435,194,00059.62" → 큰 숫자(콤마포함)를 먼저 추출 후 잔여 파싱
+- [2026-04-01] 감정평가서 호실별 감정가 추출 시 합계 검증(sum vs 합계행)으로 정확도 보장
+- [2026-04-01] DART XML 파서 재무 값이 string("474,588") 반환 → obligor 분석에서 typeof number 체크하므로 parseFloat 변환 필수
+- [2026-04-01] DART fetchBorrowingNotes 차입금 단위는 천원 → loan-engine 백만원 단위이므로 /1000 변환
+- [2026-04-01] DOCX 미정 필드는 [TBD] 대신 빈칸('') 처리 — 실무 검토 시 [TBD] 텍스트 남으면 부적절
 
 ## Current Progress
 ### 완료 (2026-03-26)
@@ -68,6 +81,33 @@
 - 소버린제이엘홀딩스 제거 (본건 무관)
 - Vercel maxDuration=60 timeout fix 배포 (commit 237e9e6)
 - **최종 DOCX 출력: 36KB, 2,098 paragraphs, 43 tables, 14 page breaks**
+- **여신검토 워크플로우 Phase 1~3 통합**:
+  - types/review.ts (ReviewDeal, ReviewOpinion, ReviewViewpoint, ReviewApproval)
+  - lib/review-store.ts (Firestore CRUD + 로컬 JSON 폴백 + 상태 자동전환)
+  - lib/product-classifier.ts (5.검토여신 product_types.py → TS 포팅, 자동분류+태그)
+  - API 7개: deals(CRUD), classify, opinions(CRUD)
+  - UI 4페이지: /review(목록), /review/new(접수), /review/[id](상세), /review/[id]/opinion(의견작성)
+  - 컴포넌트 4개: deal-form(DART연동), deal-card, deal-status-badge, financial-snapshot-table
+  - Firestore 4컬렉션 설계: review_deals, review_opinions, review_viewpoints, review_approvals
+
+### 완료 (2026-04-01)
+- **감정평가서 파서 v2 완성** (appraisal-parser.ts 1,271줄 재작성):
+  - 8개 추출 블록: 기본정보, 평가방법별금액, 감정평가서요건, 대상물건개요, 층별요약, 호실별감정가(170호), 비준사례(4건물), 경매통계
+  - types/appraisal.ts에 7개 새 인터페이스 추가
+  - 통합 테스트 20/20 통과 (test-appraisal-v2.mjs)
+  - NULL 문자 처리 + 연결 숫자 파싱 edge case 수정
+- **Excel 시트 2개 추가** (appraisal-excel.ts):
+  - 시산가액검토: 비교방식/수익방식/원가방식 시산가 비교표
+  - 경매통계(감평): 물건유형별 낙찰가율 통계
+
+- **에이엠플러스자산개발 여신신청서 DOCX 생성 파이프라인**:
+  - upload-and-generate API를 DART API 연동으로 재작성 (PDF 파싱 → DART 직접 조회)
+  - unsold-collateral 프로필 신규 생성 (미분양담보대출 전용)
+  - DART 데이터 string→number 변환 → obligor 분석 코멘트(BS/IS) 자동 생성 성공
+  - 차입금 주석(fetchBorrowingNotes) 천원→백만원 변환 + 주요 차입처 top10 표시
+  - 섹션 넘버링 수정: 1→2→3→4→5→6→7 순차 (opinion 3→7)
+  - 미정 필드 빈칸 처리, DART companyInfo로 법인정보 자동 채움
+  - 테스트 결과: 22.4KB DOCX, BS/IS 분석 코멘트 + 차입금 현황 포함
 
 ### 미확인/잠재 이슈
 - PDF 업로드 IS 파싱이 Vercel에서 실제 작동하는지 최종 확인 필요 (pdf-parse fallback 줄 재구성)
@@ -76,10 +116,17 @@
 - **감사보고서 파싱 수정 후 실데이터 검증 미완** (테스트 대상 기업 재조회 필요)
 - 일부 감사보고서 ZIP에 재무상태표 본문 없음 (특정 연도 연결 등)
 - 계정명이 완전히 다른 경우(공사미수금↔미수금) 자동 merge 불가
+- **여신검토 Phase 4~5 미구현**: 유사 사례 검색(viewpoint-search.ts), DOCX 내보내기, 승인 워크플로우, 신청서 연동
+- **여신검토 E2E 테스트 미수행**: 실데이터로 접수→의견→상태전환 전체 흐름 검증 필요
+- review-store.ts Firestore init 중복 (firebase-admin.ts와 별도 초기화 → 공유 함수 추출 리팩토링 필요)
+- upload-and-generate DART 연동이 Vercel maxDuration(60초) 내에 완료되는지 실배포 확인 필요
+- **DOCX 총차입금 계산 오류**: BS분석에서 차입금 76,456만 표시 (유동성장기차입금 273,135 + 사채 미포함)
+- **DOCX opinion 텍스트 HTML 엔티티**: &amp;quot; &amp;apos; 등 PDF 텍스트의 특수문자 이스케이프 처리 필요
 
 ## Next Session Context
-1. loan-engine equity-pledge/conditions-security 변경 커밋 (현재 uncommitted 상태)
-2. Word에서 DOCX 열어 서식/내용 최종 검수 (표 정렬, 금액 단위, 페이지 나눔)
-3. 유미캐피탈·테크메이트홀딩스 '25년 가결산 재무데이터 추가 (현재 테크메이트만 삼일 보고서 기준)
-4. TBD 항목 확정 후 반영: 대출금리, 금리산출표, 취급수수료
-5. 배포 체크리스트: app/ 수정 → 빌드 확인 → loan-app-next 복사 → `npx vercel --prod` → Ready 확인
+1. **[High] DOCX 버그 수정**: 총차입금 계산(유동성장기차입금+사채 포함), HTML 엔티티 제거
+2. **[High] 커밋 + 배포**: 11개 수정 + 15개 신규 파일 정리 → loan-app-next 복사 → Vercel 배포
+3. **[Medium] risk-analysis 자동 생성**: obligor 분석 데이터를 활용한 리스크 분석 섹션 자동 생성
+4. **[Medium] 웹 UI E2E 테스트**: /review/new 에서 파일 업로드 → DART 조회 → DOCX 다운로드 전체 흐름
+5. **여신검토 Phase 4~5**: viewpoint 검색, 승인 워크플로우, 신청서 연동
+6. **Firestore init 리팩토링**: review-store.ts 중복 초기화 제거
