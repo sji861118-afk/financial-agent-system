@@ -64,6 +64,111 @@ export function extractInlineKV(line: string, keys: string[]): Record<string, st
   return result;
 }
 
+/**
+ * 공백없이 연결된 비준사례 행 파싱
+ * 예: "ᄅ6B-F60576.442023-01-11580,000,0007,587,650선정"
+ *      "e9F-90392.822024-10-08670,000,0007,218,272-"
+ * 패턴: 기호(1자) + 층호정보 + 면적(소수) + 날짜(YYYY-MM-DD) + 금액(콤마) + 단가 + 비고
+ */
+function parseConcatenatedCaseRow(
+  row: string,
+): { label: string; unit: string; areaSqm: number; dateStr: string; price: number; unitPrice: number; remark: string } | null {
+  // 날짜 패턴으로 기준 잡기
+  const dateMatch = row.match(/(\d{4})[.-](\d{2})[.-](\d{2})/);
+  if (!dateMatch) return null;
+  const dateStr = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+  const dateIdx = row.indexOf(dateMatch[0]);
+
+  // 날짜 앞: 기호 + 층호 + 면적
+  const before = row.substring(0, dateIdx);
+  // 면적 추출: 금액 / 단가 = 면적 (역산)으로 정확한 면적 결정
+  // 날짜 뒤에서 금액과 단가를 먼저 추출
+  const after = row.substring(dateIdx + dateMatch[0].length);
+  const afterBigNums = after.match(/\d{1,3}(?:,\d{3}){2,}/g) || [];
+  const priceVal = afterBigNums.length > 0 ? parseNum(afterBigNums[0]) || 0 : 0;
+  const unitPriceVal = afterBigNums.length > 1 ? parseNum(afterBigNums[1]) || 0 : 0;
+
+  // 면적 후보들 생성 (정수부 1~3자리 + 소수점 2자리)
+  let areaSqm = 0;
+  let areaStr = "";
+  const calcArea = unitPriceVal > 0 ? priceVal / unitPriceVal : 0;
+
+  for (const digits of [1, 2, 3]) {
+    const pat = new RegExp(`(\\d{${digits}}\\.\\d{2})$`);
+    const m = before.match(pat);
+    if (m) {
+      const val = parseFloat(m[1]);
+      // 역산 면적과 비교하여 가장 가까운 값 선택
+      if (calcArea > 0 && Math.abs(val - calcArea) < 1) {
+        areaSqm = val;
+        areaStr = m[1];
+        break;
+      }
+    }
+  }
+  // 역산 매칭 실패 시 합리적 범위 내 값 사용
+  if (!areaStr) {
+    for (const digits of [3, 2, 1]) {
+      const pat = new RegExp(`(\\d{${digits}}\\.\\d{2})$`);
+      const m = before.match(pat);
+      if (m) {
+        const val = parseFloat(m[1]);
+        if (val >= 5 && val <= 500) {
+          areaSqm = val;
+          areaStr = m[1];
+          break;
+        }
+      }
+    }
+  }
+  if (!areaStr) return null;
+  const labelPart = before.substring(0, before.length - areaStr.length);
+
+  // 기호(1자) + 층(1~2자리숫자) + 호(나머지)
+  // "ᄅ6B-F605" → ᄅ | 6층 | B-F605호
+  // "e9F-903" → e | 9층 | F-903호
+  // "g5501" → g | 5층 | 501호
+  // "ᄋ111109" → ᄋ | 11층 | 1109호
+  // "k151501" → k | 15층 | 1501호
+  let label = labelPart.charAt(0);
+  let unit = labelPart.substring(1);
+  // 영문 대문자가 포함된 경우: 층(1~2자리) + 영문호(B-F605 등)
+  const alphaMatch = labelPart.match(/^(.)(\d{1,2})([A-Z].*)$/);
+  if (alphaMatch) {
+    label = alphaMatch[1];
+    unit = `${alphaMatch[2]}층 ${alphaMatch[3]}`;
+  } else {
+    // 순수 숫자만: 기호 + 층 + 호
+    // "g5501" → 5층 501호 (호가 3자리+ 우선)
+    // "ᄋ111109" → 11층 1109호 (2자리 층 + 4자리 호)
+    // "k151501" → 15층 1501호
+    const digits = labelPart.substring(1);
+    if (digits.length >= 3) {
+      // 호가 3자리 이상 되도록 분리: 남은 자릿수 >= 3이면 층=1자리, 아니면 2자리
+      let floorLen = 1;
+      if (digits.length >= 5) {
+        // 4자리+ 남으면 2자리 층 가능 (11층 1109호, 15층 1501호)
+        floorLen = 2;
+      }
+      label = labelPart.charAt(0);
+      const floor = digits.substring(0, floorLen);
+      const ho = digits.substring(floorLen);
+      unit = `${floor}층 ${ho}호`;
+    }
+  }
+
+  // 비고: 금액 뒤 한글 텍스트
+  const price = priceVal;
+  const unitPrice = unitPriceVal;
+  let remark = "";
+  const remarkMatch = after.match(/([\uAC00-\uD7A3]+)$/);
+  if (remarkMatch && !/^[원천만억]$/.test(remarkMatch[1])) {
+    remark = remarkMatch[1];
+  }
+
+  return { label, unit, areaSqm, dateStr, price, unitPrice, remark };
+}
+
 // ── 텍스트 추출 ──
 
 async function extractLines(buffer: Buffer): Promise<string[]> {
@@ -86,86 +191,200 @@ function parseBasicInfo(lines: string[]): {
   const data: Partial<CollateralAnalysis> = {};
   let found = 0;
 
-  // 감정평가서번호 (serial number like C32508-2-1401)
-  const serialIdx = findLineIndex(lines, /감정평가서번호/, 0);
-  if (serialIdx >= 0) {
-    // Serial is typically a few lines after the header
-    for (let i = serialIdx + 1; i < Math.min(serialIdx + 10, lines.length); i++) {
-      const m = lines[i].match(/([A-Z]\d[\d\-]+)/);
-      if (m) { data.serialNo = m[1]; found++; break; }
-    }
-  }
+  // ── 괄호감정표 기반 추출 (가장 정확한 영역) ──
+  // PDF 구조: L60~L100 부근에 괄호감정표가 있으며, 레이블 행과 값 행이 분리됨
+  // 레이블: 의뢰인 / 소유자 / (대상업체명) / 목록표시근거 / 감정평가목적 / 제출처 / 기준시점
+  // 값: 카카오페이증권 / 우리자산신탁(주) / 등기사항전부증명서 / 담보 / ...
+  const gwalhIdx = findLineIndex(lines, /괄호감정표/, 0);
 
-  // 소유자
-  const ownerIdx = findLineIndex(lines, /소\s*유\s*자/, 0);
-  if (ownerIdx >= 0) {
-    for (let i = ownerIdx + 1; i < Math.min(ownerIdx + 5, lines.length); i++) {
-      const t = lines[i].trim();
-      if (t.length > 1 && !/^\d/.test(t) && !/소\s*유\s*자/.test(t)) {
-        data.owner = t; found++; break;
+  if (gwalhIdx >= 0) {
+    // 괄호감정표 ~ 100줄 내 스캔
+    const scanStart = gwalhIdx;
+    const scanEnd = Math.min(gwalhIdx + 60, lines.length);
+
+    // 레이블 위치를 기록하여 다음 값 행과 매핑
+    const labelMap: { label: string; idx: number }[] = [];
+    for (let i = scanStart; i < scanEnd; i++) {
+      const flat = lines[i].replace(/\s/g, "");
+      if (/^감정평가서번호/.test(flat)) {
+        const m = flat.match(/([A-Z]\d[\d\-]+)/);
+        if (m) { data.serialNo = m[1]; found++; }
+      }
+      if (/^감정평가사$/.test(flat)) labelMap.push({ label: "감정평가사", idx: i });
+      if (/^의\s*뢰\s*인$/.test(lines[i].trim()) || /^의뢰인$/.test(flat)) labelMap.push({ label: "의뢰인", idx: i });
+      if (/^소\s*유\s*자$/.test(lines[i].trim()) || /^소유자$/.test(flat)) labelMap.push({ label: "소유자", idx: i });
+      if (/^감정평가목적$/.test(flat)) labelMap.push({ label: "목적", idx: i });
+      if (/^제\s*출\s*처$/.test(lines[i].trim()) || /^제출처$/.test(flat)) labelMap.push({ label: "제출처", idx: i });
+      if (/^기\s*준\s*시\s*점$/.test(lines[i].trim()) || /^기준시점$/.test(flat)) labelMap.push({ label: "기준시점", idx: i });
+      if (/^채\s*무\s*자$/.test(lines[i].trim()) || /^채무자$/.test(flat)) labelMap.push({ label: "채무자", idx: i });
+    }
+
+    // 감정평가법인 — 이름 뒤에 있음
+    const appIdx = findLineIndex(lines, /감정평가법인/, scanStart);
+    if (appIdx >= 0 && appIdx < scanEnd) {
+      const appFlat = lines[appIdx].replace(/\s/g, "");
+      const m = appFlat.match(/([\uAC00-\uD7A3()]+감정평가법인)/);
+      if (m) { data.appraiser = m[1]; found++; }
+    }
+
+    // 레이블 → 값 매핑: 레이블 행은 여러개가 연속된 뒤, 값 행이 같은 순서로 나옴
+    // 이 PDF의 패턴:
+    //   L74: 의뢰인 / L75: 소유자 / L76: (대상업체명) / ...
+    //   L81: 카카오페이증권 / L82: 우리자산신탁(주) / ...
+    // 레이블 그룹과 값 그룹을 찾음
+    const labelGroups: { labels: string[]; startIdx: number }[] = [];
+    let curGroup: string[] = [];
+    let curStart = -1;
+    for (const lm of labelMap) {
+      if (curGroup.length === 0) {
+        curGroup.push(lm.label);
+        curStart = lm.idx;
+      } else if (lm.idx - (curStart + curGroup.length) <= 2) {
+        curGroup.push(lm.label);
+      } else {
+        labelGroups.push({ labels: [...curGroup], startIdx: curStart });
+        curGroup = [lm.label];
+        curStart = lm.idx;
+      }
+    }
+    if (curGroup.length > 0) labelGroups.push({ labels: curGroup, startIdx: curStart });
+
+    // 각 레이블 그룹 처리
+    for (const grp of labelGroups) {
+      // 값은 레이블 블록 끝 이후에 나옴 — 비-레이블 행을 값으로 수집
+      const valStart = grp.startIdx + grp.labels.length;
+      const vals: string[] = [];
+      for (let vi = valStart; vi < Math.min(valStart + grp.labels.length + 10, scanEnd); vi++) {
+        const vt = lines[vi].trim();
+        const vFlat = vt.replace(/\s/g, "");
+        // 다음 레이블 그룹이면 중단
+        if (/^(의뢰인|소유자|감정평가목적|제출처|기준시점|채무자|감정평가사|작성일|감정평가조건|기준가치|감정평가액|공부)$/.test(vFlat)) break;
+        // 부가 레이블 행 skip
+        if (/^\(대상업체명\)$/.test(vFlat) || /^목록표시근거$/.test(vFlat)) continue;
+        // 승인번호 행 skip
+        if (/^\(승인번호/.test(vFlat)) continue;
+        // 빈 행 skip
+        if (vt.length === 0) continue;
+        vals.push(vt);
+        if (vals.length >= grp.labels.length) break;
+      }
+
+      for (let li = 0; li < grp.labels.length && li < vals.length; li++) {
+        const val = vals[li].replace(/\s+/g, " ").trim();
+        switch (grp.labels[li]) {
+          case "의뢰인":
+          case "제출처":
+            if (!data.submittedTo && val.length > 1) { data.submittedTo = val; found++; }
+            break;
+          case "소유자":
+            if (!data.owner && val.length > 1) { data.owner = val; found++; }
+            break;
+          case "목적":
+            if (!data.purpose && val.length > 0) { data.purpose = val; found++; }
+            break;
+          case "채무자":
+            if (!data.debtor && val.length > 1) { data.debtor = val; found++; }
+            break;
+        }
+      }
+    }
+
+    // 기준시점 — PDF 구조상 레이블(L80)과 값(L89)이 멀리 떨어져 있음
+    // 값 행 패턴: "2025. 08. 182025. 08. 182025. 08. 18" (작성일+조사기간+기준시점 연결)
+    // "작성일" 또는 "조사기간" 레이블 뒤에서 찾기
+    const writeDateIdx = findLineIndex(lines, /작\s*성\s*일|조\s*사\s*기\s*간/, scanStart);
+    if (writeDateIdx >= 0 && writeDateIdx < scanEnd) {
+      for (let i = writeDateIdx; i < Math.min(writeDateIdx + 5, scanEnd); i++) {
+        const d = extractDate(lines[i]);
+        if (d) { data.baseDate = d; found++; break; }
+      }
+    }
+    // Fallback: 기준시점 레이블에서 더 넓은 범위 스캔
+    if (!data.baseDate) {
+      const baseDateIdx = findLineIndex(lines, /기\s*준\s*시\s*점/, scanStart);
+      if (baseDateIdx >= 0 && baseDateIdx < scanEnd) {
+        for (let i = baseDateIdx + 1; i < Math.min(baseDateIdx + 15, scanEnd); i++) {
+          const d = extractDate(lines[i]);
+          if (d) { data.baseDate = d; found++; break; }
+        }
+      }
+    }
+
+    // 감정평가액 — \78,022,000,000 패턴
+    for (let i = scanStart; i < scanEnd; i++) {
+      const stripped = lines[i].replace(/\s/g, "");
+      const m = stripped.match(/[\\₩￦]([\d,]+)/);
+      if (m) {
+        const val = parseNum(m[1]);
+        if (val && val >= 100_000_000) {
+          data.appraisalValue = val; found++;
+          break;
+        }
       }
     }
   }
 
-  // 감정평가법인 (appraiser) — near the top
-  const appIdx = findLineIndex(lines, /감정평가법인/, 0);
-  if (appIdx >= 0) {
-    const appLine = lines[appIdx].replace(/\s/g, "");
-    const m = appLine.match(/([\uAC00-\uD7A3()]+감정평가법인)/);
-    if (m) { data.appraiser = m[1]; found++; }
-  }
-
-  // 채무자 — typically near line 97 area
-  const debtorIdx = findLineIndex(lines, /채\s*무\s*자/, 0);
-  if (debtorIdx >= 0) {
-    for (let i = debtorIdx; i < Math.min(debtorIdx + 5, lines.length); i++) {
-      const t = lines[i].trim();
-      // Look for a company/person name after 채무자
-      const afterLabel = t.replace(/.*채\s*무\s*자\s*/, "").trim();
-      if (afterLabel.length > 1) { data.debtor = afterLabel; found++; break; }
-      if (i > debtorIdx && t.length > 1 && !/채\s*무\s*자/.test(t)) {
-        data.debtor = t; found++; break;
+  // ── Fallback: 괄호감정표가 없을 때 기존 방식 ──
+  if (!data.serialNo) {
+    const serialIdx = findLineIndex(lines, /감정평가서번호/, 0);
+    if (serialIdx >= 0) {
+      for (let i = serialIdx; i < Math.min(serialIdx + 5, lines.length); i++) {
+        const m = lines[i].match(/([A-Z]\d[\d\-]+)/);
+        if (m) { data.serialNo = m[1]; found++; break; }
       }
     }
   }
 
-  // 신탁사 (trustee)
-  for (let i = 0; i < Math.min(150, lines.length); i++) {
-    const m = lines[i].match(/([\uAC00-\uD7A3]+(?:자산)?신탁(?:\(주\)|\s*주식회사)?)/);
-    if (m && !data.trustee) { data.trustee = m[1]; found++; break; }
+  if (!data.appraiser) {
+    const appIdx = findLineIndex(lines, /감정평가법인/, 0);
+    if (appIdx >= 0) {
+      const flat = lines[appIdx].replace(/\s/g, "");
+      const m = flat.match(/([\uAC00-\uD7A3()]+감정평가법인)/);
+      if (m) { data.appraiser = m[1]; found++; }
+    }
   }
 
-  // 목적 (purpose) — look for 담보 near top
-  const purposeIdx = findLineIndex(lines, /^담보$/, 0);
-  if (purposeIdx >= 0) { data.purpose = "담보"; found++; }
+  if (!data.trustee) {
+    for (let i = 0; i < Math.min(150, lines.length); i++) {
+      const m = lines[i].match(/([\uAC00-\uD7A3]+(?:자산)?신탁(?:\(주\)|\s*주식회사)?)/);
+      if (m) { data.trustee = m[1]; found++; break; }
+    }
+  }
 
-  // 의뢰인 / 제출처
-  for (let i = 0; i < Math.min(100, lines.length); i++) {
-    const stripped = lines[i].replace(/\s/g, "");
-    if (!data.submittedTo && stripped.length > 2) {
-      // Look for financial institution names right before/after serial
-      if (/증권|은행|캐피탈|저축/.test(stripped) && !/감정평가/.test(stripped)) {
+  if (!data.purpose) {
+    const purposeIdx = findLineIndex(lines, /^담보$/, 0);
+    if (purposeIdx >= 0) { data.purpose = "담보"; found++; }
+  }
+
+  if (!data.submittedTo) {
+    for (let i = 0; i < Math.min(100, lines.length); i++) {
+      const stripped = lines[i].replace(/\s/g, "");
+      if (stripped.length > 2 && /증권|은행|캐피탈|저축/.test(stripped) && !/감정평가/.test(stripped)) {
         data.submittedTo = lines[i].trim(); found++;
+        break;
       }
     }
   }
 
-  // 기준시점 (base date) — pattern: 2025. 08. 182025. 08. 18
-  for (let i = 0; i < Math.min(150, lines.length); i++) {
-    const d = extractDate(lines[i]);
-    if (d) { data.baseDate = d; found++; break; }
+  if (!data.baseDate) {
+    for (let i = 0; i < Math.min(150, lines.length); i++) {
+      // 감정평가서번호 행에서 잘못된 날짜 추출 방지 (C32508-2-1401 → 3250.08.02)
+      if (/감정평가서번호|[A-Z]\d{4,}/.test(lines[i])) continue;
+      const d = extractDate(lines[i]);
+      if (d && d.startsWith("20")) { data.baseDate = d; found++; break; }
+    }
   }
 
-  // 감정평가액 — look for the total value line with ₩ or \
-  for (let i = 0; i < Math.min(150, lines.length); i++) {
-    const stripped = lines[i].replace(/\s/g, "");
-    // Pattern: \78,022,000,000 or ₩78,022,000,000
-    const m = stripped.match(/[\\₩￦]([\d,]+)/);
-    if (m) {
-      const val = parseNum(m[1]);
-      if (val && val >= 100_000_000) { // at least 1억
-        data.appraisalValue = val; found++;
-        break;
+  if (!data.appraisalValue) {
+    for (let i = 0; i < Math.min(150, lines.length); i++) {
+      const stripped = lines[i].replace(/\s/g, "");
+      const m = stripped.match(/[\\₩￦]([\d,]+)/);
+      if (m) {
+        const val = parseNum(m[1]);
+        if (val && val >= 100_000_000) {
+          data.appraisalValue = val; found++;
+          break;
+        }
       }
     }
   }
@@ -369,44 +588,32 @@ function parseComparativeBuildings(lines: string[]): {
       }
 
       // Parse transaction rows (실거래사례)
+      // PDF 텍스트가 공백 없이 연결됨: "ᄅ6B-F60576.442023-01-11580,000,0007,587,650선정"
       if (/실거래사례/.test(flat)) {
-        // Skip header lines, then read transaction rows
         let k = j + 1;
-        // Skip header row
+        // Skip header rows
         while (k < scanEnd && /구분|층|호|면적|거래일자|거래금액|단가|비고/.test(lines[k].replace(/\s/g, ""))) k++;
-        // Read data rows
         while (k < scanEnd) {
-          const row = lines[k].trim();
-          if (!row || /감정평가사례|^$/.test(row) || /구분.*층.*호/.test(row.replace(/\s/g, ""))) break;
-          // Try to parse: label floor unit area date price unitPrice remark
-          const parts = row.split(/\s+/);
-          if (parts.length >= 5) {
-            // Find numeric values
-            const nums: number[] = [];
-            let dateStr = "";
-            for (const p of parts) {
-              if (/\d{4}-\d{2}-\d{2}/.test(p)) dateStr = p;
-              const n = parseNum(p);
-              if (n !== null) nums.push(n);
-            }
-            if (nums.length >= 2) {
-              const txCase: ComparativeCase = {
-                type: "거래",
-                label: parts[0] || "",
-                address,
-                buildingName,
-                unit: `${parts[1] || ""}층 ${parts[2] || ""}`,
-                usage: "",
-                purpose: "거래",
-                source: "실거래가",
-                areaSqm: nums[0] < 1000 ? nums[0] : 0,
-                areaPyeong: (nums[0] < 1000 ? nums[0] : 0) * 0.3025,
-                price: nums.find(n => n > 10_000_000) || 0,
-                pricePerPyeong: nums[nums.length - 1] > 1_000_000 ? nums[nums.length - 1] : 0,
-                baseDate: dateStr,
-              };
-              allCases.push(txCase);
-            }
+          const row = lines[k].replace(/\s/g, "");
+          if (!row || /감정평가사례/.test(row) || /구분.*층.*호/.test(row)) break;
+          // 연결행 파싱: 기호+층호+면적+날짜+금액+단가+비고
+          const txParsed = parseConcatenatedCaseRow(row);
+          if (txParsed) {
+            allCases.push({
+              type: "거래",
+              label: txParsed.label,
+              address,
+              buildingName,
+              unit: txParsed.unit,
+              usage: "",
+              purpose: "거래",
+              source: "실거래가",
+              areaSqm: txParsed.areaSqm,
+              areaPyeong: txParsed.areaSqm * 0.3025,
+              price: txParsed.price,
+              pricePerPyeong: txParsed.unitPrice,
+              baseDate: txParsed.dateStr,
+            });
           }
           k++;
         }
@@ -417,35 +624,25 @@ function parseComparativeBuildings(lines: string[]): {
         let k = j + 1;
         while (k < scanEnd && /구분|층|호|면적|기준시점|감정평가액|단가|비고/.test(lines[k].replace(/\s/g, ""))) k++;
         while (k < scanEnd) {
-          const row = lines[k].trim();
-          if (!row || casePattern.test(row) || /^\d+\.\s/.test(row)) break;
-          const parts = row.split(/\s+/);
-          if (parts.length >= 5) {
-            const nums: number[] = [];
-            let dateStr = "";
-            for (const p of parts) {
-              if (/\d{4}-\d{2}-\d{2}/.test(p)) dateStr = p;
-              const n = parseNum(p);
-              if (n !== null) nums.push(n);
-            }
-            if (nums.length >= 2) {
-              const apCase: ComparativeCase = {
-                type: "평가",
-                label: parts[0] || "",
-                address,
-                buildingName,
-                unit: `${parts[1] || ""}층 ${parts[2] || ""}`,
-                usage: "",
-                purpose: "감정평가",
-                source: "감정평가",
-                areaSqm: nums[0] < 1000 ? nums[0] : 0,
-                areaPyeong: (nums[0] < 1000 ? nums[0] : 0) * 0.3025,
-                price: nums.find(n => n > 10_000_000) || 0,
-                pricePerPyeong: nums[nums.length - 1] > 1_000_000 ? nums[nums.length - 1] : 0,
-                baseDate: dateStr,
-              };
-              allCases.push(apCase);
-            }
+          const row = lines[k].replace(/\s/g, "");
+          if (!row || casePattern.test(row) || /^\d+\.\s/.test(lines[k].trim())) break;
+          const apParsed = parseConcatenatedCaseRow(row);
+          if (apParsed) {
+            allCases.push({
+              type: "평가",
+              label: apParsed.label,
+              address,
+              buildingName,
+              unit: apParsed.unit,
+              usage: "",
+              purpose: "감정평가",
+              source: "감정평가",
+              areaSqm: apParsed.areaSqm,
+              areaPyeong: apParsed.areaSqm * 0.3025,
+              price: apParsed.price,
+              pricePerPyeong: apParsed.unitPrice,
+              baseDate: apParsed.dateStr,
+            });
           }
           k++;
         }
@@ -494,37 +691,65 @@ function parseAuctionQuote(lines: string[]): {
     const l = lines[i];
     const flat = l.replace(/\s/g, "");
 
-    // Region and period: "경기 안양시 동안구 2024 년 08 월 ~ 2025 년 07 월"
-    const periodMatch = l.match(/([\uAC00-\uD7A3\s]+(?:시|군|구))\s*(\d{4}\s*년?\s*\d{1,2}\s*월?\s*~\s*\d{4}\s*년?\s*\d{1,2}\s*월?)/);
-    if (periodMatch) {
-      region = periodMatch[1].trim();
-      period = periodMatch[2].replace(/\s+/g, " ").trim();
-    }
-
-    // Also try: "용도별경기안양시동안구2024년08월~2025년07월"
-    if (!region && /용도별/.test(flat)) {
-      const m2 = flat.match(/용도별([\uAC00-\uD7A3]+(?:시|군|구))([\d년월~]+)/);
-      if (m2) {
-        region = m2[1];
-        period = m2[2].replace(/년/g, ".").replace(/월/g, "").replace(/~/g, " ~ ");
+    // Region and period: "용도별경기   안양시    동안구    2024  년  08 월  ~  2025  년  07 월"
+    // "용도별" 제거 후 매칭
+    const stripped = l.replace(/용\s*도\s*별/, "").trim();
+    if (!region && /\d{4}\s*년?\s*\d{1,2}\s*월/.test(stripped)) {
+      const periodMatch = stripped.match(/([\uAC00-\uD7A3\s]+(?:시|군|구))\s*(\d{4}\s*년?\s*\d{1,2}\s*월?\s*~\s*\d{4}\s*년?\s*\d{1,2}\s*월?)/);
+      if (periodMatch) {
+        region = periodMatch[1].replace(/\s+/g, " ").trim();
+        period = periodMatch[2].replace(/\s+/g, " ").trim();
       }
     }
 
     // Data rows: "근린상가4,083,000,0002,435,194,00059.6241041.7"
-    // or with spaces: "근린상가 4,083,000,000 2,435,194,000 59.62 4 10 41.7"
+    // 해석: 총감정가=4,083,000,000 / 총낙찰가=2,435,194,000 / 낙찰가율=59.62 / 총건수=4 / 낙찰건수=10 / 낙찰률=41.7
+    // 또는: "아파트형공장17,021,000,00011,228,432,00066.0601931.7"
     const usageMatch = flat.match(/^([\uAC00-\uD7A3]+(?:상가|공장|주거|오피스|아파트형공장|근린상가))([\d,.]+)/);
     if (usageMatch) {
       const usage = usageMatch[1];
-      // Extract numbers from the rest of the line
       const numPart = flat.replace(usage, "");
-      const numTokens: number[] = [];
-      // 숫자가 공백 없이 연결됨 — 콤마 포함 큰 수 먼저 분리
+      // 1단계: 콤마 포함 큰 수(금액) 먼저 추출
       const bigNums = numPart.match(/\d{1,3}(?:,\d{3}){2,}/g) || [];
       let rest = numPart;
-      for (const bn of bigNums) { rest = rest.replace(bn, "|"); numTokens.push(parseNum(bn)!); }
-      const smallNums = rest.split("|").join("").match(/[\d.]+/g) || [];
-      for (const sn of smallNums) { const v = parseNum(sn); if (v !== null) numTokens.push(v); }
+      for (const bn of bigNums) rest = rest.replace(bn, "|");
+      // 2단계: 나머지에서 소수/정수 분리 — "59.6241041.7" 처리
+      // 경매통계 구조: 낙찰가율(소수,100미만) + 총건수(정수) + 낙찰건수(정수) + 낙찰률(소수,100미만)
+      // "59.6241041.7" → 59.62, 4, 10, 41.7
+      // "66.0601931.7" → 66.06, 0, 19, 31.7
+      const restClean = rest.split("|").join("");
+      const smallTokens: number[] = [];
+      // 소수: 정수부 1~2자리 + 소수점 이하 1~2자리 (% 값이므로 100 미만)
+      const smartDecPattern = /(\d{1,2}\.\d{1,2})/g;
+      let dm;
+      const decimals: { val: number; idx: number; len: number }[] = [];
+      while ((dm = smartDecPattern.exec(restClean)) !== null) {
+        decimals.push({ val: parseFloat(dm[1]), idx: dm.index, len: dm[0].length });
+      }
+      let cursor = 0;
+      for (const dec of decimals) {
+        if (dec.idx > cursor) {
+          const intPart = restClean.substring(cursor, dec.idx);
+          const ints = intPart.match(/\d+/g) || [];
+          for (const iv of ints) smallTokens.push(parseInt(iv));
+        }
+        smallTokens.push(dec.val);
+        cursor = dec.idx + dec.len;
+      }
+      if (cursor < restClean.length) {
+        const tail = restClean.substring(cursor);
+        const ints = tail.match(/\d+/g) || [];
+        for (const iv of ints) smallTokens.push(parseInt(iv));
+      }
+      if (decimals.length === 0) {
+        const ints = restClean.match(/\d+/g) || [];
+        for (const iv of ints) smallTokens.push(parseInt(iv));
+      }
+
+      const numTokens = [...bigNums.map(bn => parseNum(bn)!), ...smallTokens];
       // Expected: totalAppraisal, totalBid, bidRate, totalCases, bidCases, bidCaseRate
+      // 5개 토큰일 때: bidRate와 bidCaseRate 사이 정수가 "총건수+낙찰건수" 합쳐진 것
+      // 예: [4083M, 2435M, 59.62, 410, 41.7] → 410 = "4"+"10" → 분리 불가하므로 합산으로 기록
       if (numTokens.length >= 6) {
         rows.push({
           usage,
@@ -534,6 +759,17 @@ function parseAuctionQuote(lines: string[]): {
           totalCases: numTokens[3],
           bidCases: numTokens[4],
           bidCaseRate: numTokens[5],
+        });
+      } else if (numTokens.length === 5) {
+        // totalCases + bidCases가 합쳐진 경우 — 개별 분리가 어려우므로 합산값 사용
+        rows.push({
+          usage,
+          totalAppraisal: numTokens[0],
+          totalBid: numTokens[1],
+          bidRate: numTokens[2],
+          totalCases: numTokens[3], // 합산 값이지만 기록
+          bidCases: 0,
+          bidCaseRate: numTokens[4],
         });
       }
     }

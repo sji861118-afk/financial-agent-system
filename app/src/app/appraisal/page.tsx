@@ -62,7 +62,28 @@ export default function AppraisalPage() {
           body: formData,
         });
         if (parseRes.ok) {
-          parseResult = await parseRes.json();
+          const json = await parseRes.json();
+          if (json.success && json.extracted) {
+            const ext = json.extracted;
+            parseResult = {
+              collateral: {
+                ...data.collateral,
+                ...ext.collateral,
+                // valuationSummary → method 매핑
+                ...(ext.valuationSummary ? {
+                  method: {
+                    comparison: ext.valuationSummary.comparisonTotal || 0,
+                    cost: 0,
+                    income: ext.valuationSummary.incomeTotal || 0,
+                  },
+                  appraisalValue: ext.valuationSummary.finalValue || ext.collateral?.appraisalValue || 0,
+                } : {}),
+              },
+              comparatives: ext.comparatives || [],
+              collateralDetail: ext.collateralDetail || [],
+              supply: { ...data.supply, ...ext.supply },
+            };
+          }
         }
       } catch {
         // parse failed — continue to manual input

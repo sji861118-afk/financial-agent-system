@@ -5,7 +5,7 @@ import type { AppraisalParseResult, CollateralAnalysis, ComparativeCase, Compara
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
-    const files = formData.getAll("files") as File[];
+    const files = formData.getAll("appraisal") as File[];
     const propertyType = (formData.get("propertyType") as string) || "아파트";
 
     if (files.length === 0) {
