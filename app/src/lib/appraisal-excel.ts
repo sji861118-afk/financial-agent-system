@@ -25,6 +25,8 @@ import type {
   RealTransactionRow,
   LandPriceRow,
   NearbyComplex,
+  AuctionQuote,
+  AppraisalParseResult,
 } from "@/types/appraisal";
 
 // ============================================================
@@ -1291,11 +1293,137 @@ function buildDataMarketSheet(wb: ExcelJS.Workbook, data: AppraisalCase) {
 }
 
 // ============================================================
+// Sheet 10: 시산가액검토
+// ============================================================
+
+function buildValuationSheet(
+  wb: ExcelJS.Workbook,
+  summary: NonNullable<AppraisalParseResult["valuationSummary"]>,
+) {
+  const ws = wb.addWorksheet("시산가액검토");
+  ws.getColumn(1).width = 20;
+  ws.getColumn(2).width = 25;
+  ws.getColumn(3).width = 25;
+
+  let r = 1;
+
+  // Title
+  ws.mergeCells(r, 1, r, 3);
+  setCell(ws, r, 1, "시산가액 검토", {
+    font: { name: FONT, bold: true, size: 14 },
+    alignment: CENTER,
+  });
+  r++;
+
+  // Subtitle
+  ws.mergeCells(r, 1, r, 3);
+  setCell(ws, r, 1, "거래사례비교법 vs 수익환원법", {
+    font: SUBTITLE_FONT,
+    alignment: CENTER,
+  });
+  r++;
+  r++; // blank row
+
+  // Header
+  setHeaderRow(ws, r, ["구분", "비교방식(원)", "수익방식(원)"]);
+  r++;
+
+  // Data row
+  setDataRow(ws, r, ["합계", summary.comparisonTotal, summary.incomeTotal], {
+    numCols: [1, 2],
+  });
+  r++;
+  r++; // blank row
+
+  // 감정평가액 결정
+  ws.mergeCells(r, 1, r, 3);
+  setCell(ws, r, 1, "감정평가액 결정", {
+    font: SUBTITLE_FONT,
+    fill: SUB_HEADER_FILL,
+    alignment: CENTER,
+    border: BORDER_THIN,
+  });
+  r++;
+
+  setKvRow(ws, r, "결정방법", summary.method, [1, 1], [2, 3]);
+  r++;
+
+  setKvRow(ws, r, "최종 감정평가액", summary.finalValue, [1, 1], [2, 3], {
+    numFmt: NUM_FMT,
+  });
+  r++;
+}
+
+// ============================================================
+// Sheet 11: 경매통계(감평)
+// ============================================================
+
+function buildAuctionQuoteSheet(
+  wb: ExcelJS.Workbook,
+  aq: AuctionQuote,
+) {
+  const ws = wb.addWorksheet("경매통계(감평)");
+  ws.getColumn(1).width = 15;
+  ws.getColumn(2).width = 20;
+  ws.getColumn(3).width = 20;
+  ws.getColumn(4).width = 12;
+  ws.getColumn(5).width = 10;
+  ws.getColumn(6).width = 10;
+  ws.getColumn(7).width = 12;
+
+  let r = 1;
+
+  // Title
+  ws.mergeCells(r, 1, r, 7);
+  setCell(ws, r, 1, "경매통계 (감정평가서 인용)", {
+    font: { name: FONT, bold: true, size: 14 },
+    alignment: CENTER,
+  });
+  r++;
+
+  // KV rows
+  setKvRow(ws, r, "지역", aq.region, [1, 1], [2, 7]);
+  r++;
+  setKvRow(ws, r, "기간", aq.period, [1, 1], [2, 7]);
+  r++;
+  setKvRow(ws, r, "출처", aq.source, [1, 1], [2, 7]);
+  r++;
+  r++; // blank row
+
+  // Header
+  setHeaderRow(ws, r, [
+    "용도", "총감정가", "총낙찰가", "낙찰가율(%)",
+    "총건수", "낙찰건수", "낙찰률(%)",
+  ]);
+  r++;
+
+  // Data rows
+  for (const row of aq.rows) {
+    setDataRow(
+      ws,
+      r,
+      [
+        row.usage,
+        row.totalAppraisal,
+        row.totalBid,
+        row.bidRate,
+        row.totalCases,
+        row.bidCases,
+        row.bidCaseRate,
+      ],
+      { numCols: [1, 2, 4, 5], pctCols: [3, 6] },
+    );
+    r++;
+  }
+}
+
+// ============================================================
 // Main export
 // ============================================================
 
 export async function generateAppraisalExcel(
-  data: AppraisalCase
+  data: AppraisalCase,
+  parseResult?: Partial<AppraisalParseResult>,
 ): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
 
@@ -1308,6 +1436,13 @@ export async function generateAppraisalExcel(
   buildDataSupplySheet(wb, data);
   buildDataComparativeSheet(wb, data);
   buildDataMarketSheet(wb, data);
+
+  if (parseResult?.valuationSummary) {
+    buildValuationSheet(wb, parseResult.valuationSummary);
+  }
+  if (parseResult?.auctionQuote) {
+    buildAuctionQuoteSheet(wb, parseResult.auctionQuote);
+  }
 
   const arrayBuffer = await wb.xlsx.writeBuffer();
   return Buffer.from(arrayBuffer);
