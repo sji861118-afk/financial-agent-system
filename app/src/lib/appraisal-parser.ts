@@ -72,7 +72,9 @@ async function extractLines(buffer: Buffer): Promise<string[]> {
   const data = await pdfParse(buffer);
   const text: string = data.text || "";
   if (!text || text.trim().length < 50) return [];
-  return text.split(/\n/).filter((l: string) => l.trim().length > 0);
+  // NULL 문자(\u0000)를 공백으로 치환 — pdf-parse가 일부 PDF에서 NULL을 삽입함
+  const cleaned = text.replace(/\u0000/g, " ");
+  return cleaned.split(/\n/).filter((l: string) => l.trim().length > 0);
 }
 
 // ── 섹션 파서 스텁 (Task 3~7에서 구현) ──
@@ -516,14 +518,12 @@ function parseAuctionQuote(lines: string[]): {
       // Extract numbers from the rest of the line
       const numPart = flat.replace(usage, "");
       const numTokens: number[] = [];
-      // Split by known boundaries: large numbers, then percentages, then small counts
-      const allNums = numPart.match(/[\d,.]+/g);
-      if (allNums) {
-        for (const n of allNums) {
-          const v = parseNum(n);
-          if (v !== null) numTokens.push(v);
-        }
-      }
+      // 숫자가 공백 없이 연결됨 — 콤마 포함 큰 수 먼저 분리
+      const bigNums = numPart.match(/\d{1,3}(?:,\d{3}){2,}/g) || [];
+      let rest = numPart;
+      for (const bn of bigNums) { rest = rest.replace(bn, "|"); numTokens.push(parseNum(bn)!); }
+      const smallNums = rest.split("|").join("").match(/[\d.]+/g) || [];
+      for (const sn of smallNums) { const v = parseNum(sn); if (v !== null) numTokens.push(v); }
       // Expected: totalAppraisal, totalBid, bidRate, totalCases, bidCases, bidCaseRate
       if (numTokens.length >= 6) {
         rows.push({
@@ -718,16 +718,17 @@ function parseValuationSummary(lines: string[]): {
   let finalValue = 0;
   let method = "";
 
-  const scanEnd = Math.min(idx + 60, lines.length);
+  const scanEnd = Math.min(idx + 300, lines.length);
   for (let i = idx; i < scanEnd; i++) {
     const l = lines[i];
     const flat = l.replace(/\s/g, "");
 
     // Look for "소계" or totals line with two large numbers
     if (/소\s*계/.test(l)) {
-      const nums = flat.match(/[\d,]+/g);
-      if (nums) {
-        const parsed = nums.map(n => parseNum(n)).filter((n): n is number => n !== null && n > 1_000_000);
+      // 숫자가 공백 없이 연결됨 — 콤마 포함 큰 수 패턴으로 분리
+      const bigNums = flat.match(/\d{1,3}(?:,\d{3}){2,}/g);
+      if (bigNums) {
+        const parsed = bigNums.map(n => parseNum(n)).filter((n): n is number => n !== null && n > 1_000_000);
         if (parsed.length >= 2) {
           comparisonTotal = parsed[0];
           incomeTotal = parsed[1];
