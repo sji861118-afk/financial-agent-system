@@ -27,6 +27,7 @@ export type SectionId =
   | 'PAGE_BREAK'
   // Plugins
   | 'plugin:equity-pledge'
+  | 'plugin:unsold-collateral'
   | 'plugin:collateral' | 'plugin:land-registry'
   | 'plugin:trigger' | 'plugin:interest-reserve' | 'plugin:equity-ratio'
   | 'plugin:sales-status' | 'plugin:sensitivity' | 'plugin:recovery'
@@ -335,9 +336,70 @@ export interface RiskAnalysisItem {
 // ─── Placeholder types for future loan types ───
 
 export interface PFBridgeData { [key: string]: unknown }
-export interface UnsoldCollateralData { [key: string]: unknown }
+export interface UnsoldCollateralData {
+  /** 담보 물건 기본 정보 */
+  collateral?: {
+    location: string;
+    appraiser?: string;
+    appraisalDate?: string;
+    appraisalValue?: number; // 감정가 합계 (백만원)
+    trustee?: string; // 수탁자
+    trustType?: string; // 관리형토지신탁 등
+  };
+  /** 호실별 상세 (Excel에서 추출) */
+  units?: UnsoldUnit[];
+  /** 사업개요 */
+  project?: {
+    name: string;
+    location: string;
+    landArea?: number; // ㎡
+    buildingArea?: number; // ㎡
+    grossFloorArea?: number; // 연면적 ㎡
+    floors?: string; // "지하2층~지상15층"
+    totalUnits?: number;
+    soldUnits?: number;
+    unsoldUnits?: number;
+    salesRate?: number; // 분양률 %
+    completionDate?: string; // 준공일
+    developer?: string; // 시행사
+    generalContractor?: string; // 시공사
+  };
+  /** 분양현황 (금액 기준) */
+  salesAmount?: {
+    totalSalesValue?: number; // 총 분양가 (백만원)
+    paidAmount?: number; // 납부완료
+    unpaidAmount?: number; // 미납
+    salesRateByAmount?: number; // 분양률(금액기준) %
+  };
+  /** 민감도 분석 시나리오 */
+  sensitivity?: SensitivityScenario[];
+}
 export interface PrivateBondData { [key: string]: unknown }
 export interface ConstructionFinanceData { [key: string]: unknown }
+
+export interface UnsoldUnit {
+  no: number;
+  building: string; // 동
+  unit: string; // 호
+  type?: string; // 타입 (49A, 59B 등)
+  exclusiveArea?: number; // 전용면적 ㎡
+  supplyArea?: number; // 공급면적 ㎡
+  salesPrice?: number; // 분양가 (백만원)
+  appraisalValue?: number; // 감정가 (백만원)
+  collateralValue?: number; // 담보가격 (백만원)
+  ltv?: number; // LTV %
+  midPaymentBalance?: number; // 중도금잔액
+  note?: string; // 비고 (소송 등)
+}
+
+export interface SensitivityScenario {
+  salesRate: number; // 분양률 %
+  salesRevenue?: number;
+  loanBalance?: number;
+  unsoldValue?: number;
+  unsoldLtv?: number;
+  note?: string;
+}
 
 // ─── Unresolved Items ───
 

@@ -21,6 +21,7 @@ import './sections/common/risk-analysis';
 import './sections/common/checklist';
 import './sections/common/tbd-summary';
 import './sections/plugins/equity-pledge';
+import './sections/plugins/unsold-collateral';
 
 export interface GenerateOptions {
   profile: LoanTypeProfile;

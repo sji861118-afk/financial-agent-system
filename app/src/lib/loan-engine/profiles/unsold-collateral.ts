@@ -10,6 +10,8 @@ export const unsoldCollateralProfile: LoanTypeProfile = {
     'conditions-security',
     'opinion',
     'PAGE_BREAK',
+    'plugin:unsold-collateral',
+    'PAGE_BREAK',
     'obligor-borrower',
     'borrowings',
     'obligor-related',
