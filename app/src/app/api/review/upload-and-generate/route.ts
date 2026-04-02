@@ -5,6 +5,7 @@ import { findCorpCode } from '@/lib/dart-corp-codes';
 import { buildFinancialData, fetchBorrowingNotes } from '@/lib/dart-api';
 import type { FinancialRow as DartFinancialRow } from '@/lib/dart-api';
 import type { BorrowingDetail } from '@/lib/loan-engine/types';
+import { checkCompleteness, type CheckerInput } from '@/lib/loan-engine/completeness-checker';
 
 export const maxDuration = 60;
 
@@ -14,6 +15,7 @@ export async function POST(request: NextRequest) {
     const files = formData.getAll('files') as File[];
     const borrowerName = formData.get('borrowerName') as string || '';
     const memo = formData.get('memo') as string || '';
+    const mode = formData.get('mode') as string || 'generate'; // 'check' | 'generate'
 
     if (files.length === 0) {
       return Response.json({ error: '파일을 1개 이상 업로드해주세요' }, { status: 400 });
@@ -62,6 +64,22 @@ export async function POST(request: NextRequest) {
       || extract(allText, /위탁자[:\s겸수익]*([^\n(]+)/)
       || '';
     const dartResult = await fetchDartFinancials(effectiveName.trim());
+
+    // mode=check: 완성도 리포트만 반환
+    if (mode === 'check') {
+      const checkerInput: CheckerInput = {
+        extractedText: allText,
+        fileNames: files.map(f => f.name),
+        dart: {
+          hasCompanyInfo: !!dartResult.companyInfo?.ceoNm,
+          hasFinancials: dartResult.financials.years.length > 0,
+          hasBorrowingNotes: dartResult.borrowings.length > 0,
+          years: dartResult.financials.years,
+        },
+      };
+      const report = checkCompleteness(checkerInput);
+      return Response.json({ success: true, report });
+    }
 
     // 룰기반 파싱으로 LoanApplication 구성 (재무데이터는 DART에서)
     const app = buildLoanApplication(allText, borrowerName, memo, dartResult);
