@@ -310,7 +310,14 @@ function FinancialContent() {
       const data = await res.json();
       if (data.success) {
         setResult(data.result);
-        toast.success(`${data.result.companyInfo.corpName || companyName} 조회 완료!`);
+        if (!data.result.hasData) {
+          toast.warning(
+            data.result.noDataReason || "재무데이터를 조회할 수 없습니다. 파일 업로드 탭에서 직접 업로드해 주세요.",
+            { duration: 10000 }
+          );
+        } else {
+          toast.success(`${data.result.companyInfo.corpName || companyName} 조회 완료!`);
+        }
         // 분기/반기 보고서 사용 경고
         if (data.result.quarterlyWarnings?.length > 0) {
           for (const w of data.result.quarterlyWarnings) {

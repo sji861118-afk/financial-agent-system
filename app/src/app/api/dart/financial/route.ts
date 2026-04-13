@@ -123,7 +123,7 @@ export async function POST(request: NextRequest) {
       result = cached.data;
       console.log(`[Cache] ${corpName} DART 캐시 사용`);
     } else {
-      result = await buildFinancialData(corp.corpCode, displayYears);
+      result = await buildFinancialData(corp.corpCode, displayYears, corp.stockCode);
       _dartCache.set(cacheKey, { data: result, ts: Date.now() });
     }
 
@@ -218,7 +218,7 @@ export async function POST(request: NextRequest) {
     let filename: string | null = null;
     let fileSize = 0;
     let excelBase64: string | null = null;
-    if (doExcel) {
+    if (doExcel && result.hasData) {
       try {
         const now = new Date();
         const ts = `${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;

@@ -339,7 +339,10 @@ function buildStatements(
 
     for (const [field, dataYear] of Object.entries(periodMap)) {
       if (!displayYears.includes(dataYear)) continue;
-      if (yearData[dataYear]) continue;
+      // 당기(thstrm) 데이터가 가장 정확 → 기존 전기/전전기 데이터 덮어쓰기 허용
+      // 전기/전전기 데이터는 이미 당기 데이터가 있으면 건너뜀
+      const isCurrentYear = field.startsWith("thstrm");
+      if (yearData[dataYear] && !isCurrentYear) continue;
 
       const vals: Record<string, string> = {};
       for (const it of items) {
@@ -953,8 +956,8 @@ async function parseOneAuditXml(
       const text = row.join("").replace(/\s/g, "");
       const first = row[0]?.replace(/\s/g, "") || "";
 
-      // 헤더 행에서 당기/전기 컬럼 순서 감지
-      if (/제\d+.*기|당기|전기|당\s*기|전\s*기/.test(text) && !/매출|영업|자산|부채/.test(text)) {
+      // 헤더 행에서 당기/전기 컬럼 순서 감지 — BS 완료 전까지만 (자본변동표 등 후속 섹션 오감지 방지)
+      if (!bsCompleted && /제\d+.*기|당기|전기|당\s*기|전\s*기/.test(text) && !/매출|영업|자산|부채|당기손익|기타포괄/.test(text)) {
         const joined = row.join(" ");
         const curIdx = joined.search(/당기|제\s*\d+\s*\(당\)|제\s*\d+\s*기/);
         const prevIdx = joined.search(/전기|제\s*\d+\s*\(전\)/);
@@ -1254,7 +1257,8 @@ function processRawStatements(
 
 export async function buildFinancialData(
   corpCode: string,
-  years: string[]
+  years: string[],
+  stockCode?: string
 ): Promise<FinancialResult> {
   const companyInfo = await getCompanyInfo(corpCode);
 
@@ -1273,10 +1277,17 @@ export async function buildFinancialData(
     hasData: false,
   };
 
+  // 비상장 법인 감지: stockCode가 없으면 Stage 1/2 생략 → Stage 3 직행
+  const isNonListed = stockCode !== undefined && stockCode.trim() === "";
+  if (isNonListed) {
+    console.log(`[DART] 비상장 법인 감지 (${companyInfo.corpName || corpCode}) → Stage 1/2 생략, 감사보고서(Stage 3) 직접 시도`);
+  }
+
   // ── 1단계: 전체재무제표 API (fnlttSinglAcntAll) — OFS + CFS 동시 조회 ──
+  // 비상장 법인은 fnlttSinglAcntAll/fnlttSinglAcnt 데이터 없음 → 바로 Stage 3으로
   let gotFull = false;
 
-  for (const [fsLabel, fsDiv] of [["개별", "OFS"], ["연결", "CFS"]] as const) {
+  if (!isNonListed) for (const [fsLabel, fsDiv] of [["개별", "OFS"], ["연결", "CFS"]] as const) {
     const rawByYear: Record<string, DartRawItem[]> = {};
     let hasData = false;
 
@@ -1359,27 +1370,29 @@ export async function buildFinancialData(
   }
 
   // ── 2단계: 주요계정 API (fnlttSinglAcnt) ──
-  console.log("[DART] 전체재무제표 없음 → 주요계정(fnlttSinglAcnt) API 시도");
-  const keyAccountsRaw: Record<string, DartRawItem[]> = {};
-  for (const year of years) {
-    keyAccountsRaw[year] = await fetchKeyAccounts(corpCode, year);
+  if (!isNonListed) {
+    console.log("[DART] 전체재무제표 없음 → 주요계정(fnlttSinglAcnt) API 시도");
+    const keyAccountsRaw: Record<string, DartRawItem[]> = {};
+    for (const year of years) {
+      keyAccountsRaw[year] = await fetchKeyAccounts(corpCode, year);
+    }
+
+    const keyResult = tryKeyAccounts(keyAccountsRaw, years);
+    if (keyResult) {
+      const ratios = calcRatios(keyResult.bsRows, keyResult.isRows, keyResult.displayYears);
+      result.bsItems = keyResult.bsRows;
+      result.isItems = keyResult.isRows;
+      result.ratios = ratios;
+      result.hasOfs = true;
+      result.years = keyResult.displayYears;
+      result.hasData = true;
+      result.source = "DART Open API (주요계정 - fnlttSinglAcnt)";
+      return result;
+    }
   }
 
-  const keyResult = tryKeyAccounts(keyAccountsRaw, years);
-  if (keyResult) {
-    const ratios = calcRatios(keyResult.bsRows, keyResult.isRows, keyResult.displayYears);
-    result.bsItems = keyResult.bsRows;
-    result.isItems = keyResult.isRows;
-    result.ratios = ratios;
-    result.hasOfs = true;
-    result.years = keyResult.displayYears;
-    result.hasData = true;
-    result.source = "DART Open API (주요계정 - fnlttSinglAcnt)";
-    return result;
-  }
-
-  // ── 3단계: 감사보고서 원문(XML) 파싱 — 1/2단계 실패 시 항상 시도 ──
-  const filingInfo = await checkFilingType(corpCode);
+  // ── 3단계: 감사보고서 원문(XML) 파싱 — 비상장 직행 또는 1/2단계 실패 시 ──
+  const filingInfo = isNonListed ? { onlyAudit: true } : await checkFilingType(corpCode);
   if (filingInfo.onlyAudit || !result.hasData) {
     console.log(`[DART] 주요계정도 없음 → 감사보고서 원문(XML) 파싱 시도 (onlyAudit=${filingInfo.onlyAudit})`);
     const auditResult = await fetchAuditReportData(corpCode, years);
@@ -1847,6 +1860,171 @@ export interface ShareholderInfo {
   shareRatio: string;     // 지분율(%)
   relation: string;       // 회사와의 관계
   remark: string;         // 비고
+}
+
+// ─── Related Companies (계열회사/타법인출자 현황) ──────────────
+
+export interface RelatedCompanyEntry {
+  corpName: string;
+  relationship: string;
+  ownershipPct?: number;
+  corpCode?: string;
+  industry?: string;
+}
+
+/**
+ * 사업보고서에서 관계회사/타법인출자 현황을 추출.
+ * DART list.json (정기공시, pblntf_ty=A) → document.xml → HTML 테이블 파싱
+ */
+export async function fetchRelatedCompanies(
+  corpCode: string,
+  year: string,
+): Promise<RelatedCompanyEntry[]> {
+  const apiKey = getApiKey();
+
+  try {
+    // 1) 사업보고서 접수번호 조회
+    const params = new URLSearchParams({
+      crtfc_key: apiKey,
+      corp_code: corpCode,
+      bgn_de: `${year}0101`,
+      end_de: `${year}1231`,
+      pblntf_ty: 'A',
+      page_count: '20',
+    });
+    const res = await fetch(`${DART_API_BASE}/list.json?${params}`);
+    const d = await res.json();
+
+    if (d.status !== '000' || !d.list) return [];
+
+    let rceptNo: string | null = null;
+    for (const it of d.list) {
+      const nm = it.report_nm || '';
+      if (nm.includes('사업보고서') && !nm.includes('제출')) {
+        rceptNo = it.rcept_no;
+        break;
+      }
+    }
+    if (!rceptNo) return [];
+
+    // 2) document.xml (ZIP) 다운로드 및 파싱
+    const docParams = new URLSearchParams({ crtfc_key: apiKey, rcept_no: rceptNo });
+    const docRes = await fetch(`${DART_API_BASE}/document.xml?${docParams}`);
+    const rawBuf = Buffer.from(await docRes.arrayBuffer());
+
+    if (rawBuf[0] !== 0x50 || rawBuf[1] !== 0x4B) return []; // not ZIP
+
+    const zip = await JSZip.loadAsync(rawBuf);
+
+    // 모든 파일에서 관련 섹션 탐색
+    const entries: RelatedCompanyEntry[] = [];
+    const fileKeys = Object.keys(zip.files);
+
+    for (const fk of fileKeys) {
+      const content = await zip.files[fk].async('string');
+
+      // "타법인출자 현황" 또는 "계열회사" 섹션 탐색
+      const sectionPatterns = [
+        '타법인출자 현황',
+        '타법인 출자 현황',
+        '계열회사 현황',
+        '관계기업 현황',
+        '종속기업 현황',
+        '관계회사 현황',
+      ];
+
+      let sectionIdx = -1;
+      for (const pat of sectionPatterns) {
+        const idx = content.indexOf(pat);
+        if (idx >= 0) {
+          sectionIdx = idx;
+          break;
+        }
+      }
+      if (sectionIdx < 0) continue;
+
+      // 해당 위치 이후 범위에서 TR 파싱 (대기업 계열사 테이블이 길 수 있으므로 50KB)
+      const chunk = content.substring(sectionIdx, sectionIdx + 50000);
+      const trMatches = chunk.match(/<TR[^>]*>[\s\S]*?<\/TR>/gi) || [];
+      const tableRows: string[][] = [];
+
+      for (const tr of trMatches) {
+        const cells: string[] = [];
+        const cellMatches = tr.match(/<(?:TD|TH|TE)[^>]*>[\s\S]*?(?=<(?:TD|TH|TE)|<\/TR)/gi) || [];
+        for (const cell of cellMatches) {
+          cells.push(cell.replace(/<[^>]*>/g, '').trim().replace(/\s+/g, ' '));
+        }
+        if (cells.length >= 2) tableRows.push(cells);
+      }
+
+      if (tableRows.length < 2) continue;
+
+      // 헤더행 찾기 (법인명/회사명 + 지분율/출자비율 패턴)
+      let headerIdx = -1;
+      let nameCol = -1;
+      let pctCol = -1;
+      let relCol = -1;
+
+      for (let r = 0; r < Math.min(tableRows.length, 5); r++) {
+        const rowCells = tableRows[r];
+        for (let c = 0; c < rowCells.length; c++) {
+          const txt = rowCells[c];
+          if (/법인명|회사명|기업명|출자법인/.test(txt) && nameCol < 0) { nameCol = c; headerIdx = r; }
+          if (/지분율|출자비율|보유비율|지분/.test(txt) && pctCol < 0) pctCol = c;
+          if (/관계|비고|목적/.test(txt) && relCol < 0) relCol = c;
+        }
+        if (headerIdx >= 0) break;
+      }
+
+      if (headerIdx < 0 || nameCol < 0) continue;
+
+      // 데이터행 파싱
+      for (let r = headerIdx + 1; r < tableRows.length && entries.length < 20; r++) {
+        const rowCells = tableRows[r];
+        const name = (rowCells[nameCol] || '').trim();
+
+        // 빈 행, 합계행, 단위행 스킵
+        if (!name || /합계|소계|단위|^-$/.test(name)) continue;
+        // 숫자만 있는 행 스킵
+        if (/^\d+$/.test(name)) continue;
+
+        let pct: number | undefined;
+        if (pctCol >= 0 && rowCells[pctCol]) {
+          const m = rowCells[pctCol].replace(/,/g, '').match(/([\d.]+)/);
+          if (m) pct = parseFloat(m[1]);
+        }
+
+        const rel = relCol >= 0 ? (rowCells[relCol] || '').trim() : '';
+        const relationship = rel || (pct && pct >= 50 ? '종속회사' : pct && pct >= 20 ? '관계회사' : '출자회사');
+
+        // 이미 추가된 회사 중복 방지
+        if (entries.some(e => e.corpName === name)) continue;
+
+        entries.push({
+          corpName: name,
+          relationship,
+          ownershipPct: pct,
+        });
+      }
+
+      if (entries.length > 0) break; // 첫 번째 매칭 섹션만 사용
+    }
+
+    // 3) corpCode 매핑
+    const { findCorpCode } = await import('@/lib/dart-corp-codes');
+    for (const entry of entries) {
+      const corp = findCorpCode(entry.corpName);
+      if (corp) {
+        entry.corpCode = corp.corpCode;
+      }
+    }
+
+    console.log(`[DART] 관련회사 ${entries.length}건 발견 (${corpCode})`);
+    return entries;
+  } catch (e) {
+    console.error('[DART] 관련회사 조회 오류:', e);
+    return [];
+  }
 }
 
 export async function fetchShareholders(corpCode: string, year: string): Promise<ShareholderInfo[]> {
