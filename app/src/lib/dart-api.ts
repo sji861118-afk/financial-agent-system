@@ -1171,11 +1171,12 @@ async function fetchAuditReportData(
   const ofsMap: Record<string, string> = {}; // 개별: 감사보고서
   const cfsMap: Record<string, string> = {}; // 연결: 연결감사보고서
 
+  const minYear = parseInt(years.reduce((a, b) => a < b ? a : b));
   try {
     const params = new URLSearchParams({
       crtfc_key: apiKey,
       corp_code: corpCode,
-      bgn_de: `${parseInt(years.reduce((a, b) => a < b ? a : b)) - 1}0101`,
+      bgn_de: `${minYear - 1}0101`,
       end_de: "20261231",
       pblntf_ty: "F",
       page_count: "50",
@@ -1190,7 +1191,6 @@ async function fetchAuditReportData(
       const yr = m[1];
 
       if (nm.includes("연결감사보고서")) {
-        // 기재정정 우선 (먼저 등장)
         if (!cfsMap[yr]) cfsMap[yr] = it.rcept_no;
       } else if (nm.includes("감사보고서")) {
         if (!ofsMap[yr]) ofsMap[yr] = it.rcept_no;
@@ -1198,9 +1198,46 @@ async function fetchAuditReportData(
     }
   } catch { /* ignore */ }
 
+  // 1-b. 감사보고서로 커버 안 되는 연도는 사업보고서(A-type) XML로 보완
+  const coveredYears = new Set([...Object.keys(ofsMap), ...Object.keys(cfsMap)]);
+  const missingYears = years.filter(y => !coveredYears.has(y));
+  const annualMap: Record<string, string> = {}; // 사업보고서 rcept_no
+  if (missingYears.length > 0) {
+    try {
+      const params = new URLSearchParams({
+        crtfc_key: apiKey,
+        corp_code: corpCode,
+        bgn_de: `${minYear - 1}0101`,
+        end_de: "20261231",
+        pblntf_ty: "A",
+        page_count: "50",
+      });
+      const res = await fetch(`${DART_API_BASE}/list.json?${params}`);
+      const d = await res.json();
+      for (const it of d.list || []) {
+        const nm: string = it.report_nm || "";
+        if (nm.includes("기재정정")) continue;
+        if (!nm.includes("사업보고서")) continue;
+        const m = nm.match(/\((\d{4})/);
+        if (!m) continue;
+        const yr = m[1];
+        if (missingYears.includes(yr) && !annualMap[yr]) {
+          annualMap[yr] = it.rcept_no;
+        }
+      }
+      if (Object.keys(annualMap).length > 0) {
+        console.log(`[DART] 감사보고서 미커버 연도 → 사업보고서 XML 보완: ${Object.keys(annualMap).join(",")}`);
+      }
+    } catch { /* ignore */ }
+    // 사업보고서를 ofsMap에 추가 (감사보고서가 없는 연도만)
+    for (const [yr, rno] of Object.entries(annualMap)) {
+      if (!ofsMap[yr]) ofsMap[yr] = rno;
+    }
+  }
+
   const ofsYears = Object.keys(ofsMap);
   const cfsYears = Object.keys(cfsMap);
-  console.log(`[DART] 감사보고서 발견 — 개별: ${ofsYears.join(",")||"없음"} / 연결: ${cfsYears.join(",")||"없음"}`);
+  console.log(`[DART] 보고서 발견 — 개별: ${ofsYears.join(",")||"없음"} / 연결: ${cfsYears.join(",")||"없음"}`);
 
   // 2. 개별 감사보고서 파싱
   let ofsResult: AuditReportResult["ofs"] = null;
