@@ -180,58 +180,171 @@ export interface FinancialResult {
   noDataReason?: string;
 }
 
-// 계정과목 계층 depth 추론
-function detectAccountDepth(accountNm: string, sjFilter: string[]): number {
+// ── 계정과목 계층 depth 추론 (전 산업 범용) ──
+
+// depth 0: 최상위 총계 — 볼드, 들여쓰기 없음
+const DEPTH0_KEYWORDS = new Set([
+  // BS 총계
+  "자산총계", "자산합계", "부채총계", "부채합계", "자본총계", "자본합계",
+  "부채와자본총계", "부채및자본총계", "자본과부채총계", "부채와자본합계",
+  // IS 핵심 지표
+  "매출액", "영업수익", "영업이익", "영업이익(손실)", "영업손실", "영업손익",
+  "당기순이익", "당기순이익(손실)", "당기순손실", "당기순손익",
+  "반기순이익", "반기순손실", "분기순이익", "분기순손실",
+  "법인세비용차감전순이익", "법인세비용차감전순손익",
+  "법인세비용차감전순손실", "법인세비용차감전이익",
+  "법인세비용차감전손실", "법인세비용차감전손익",
+  "법인세차감전순이익", "법인세차감전순손실",
+  "법인세차감전계속영업이익", "법인세차감전계속영업손실",
+  "총포괄손익", "총포괄이익", "당기총포괄손익", "당기총포괄이익",
+  "반기총포괄손익", "분기총포괄손익",
+  // 건설업
+  "공사수익", "도급수익", "건설수익", "분양수익",
+  // 보험업
+  "보험수익", "보험료수익", "수입보험료",
+  // 금융업
+  "순영업수익", "순영업수익합계", "영업수익합계",
+  "이자수익합계", "순이자손익",
+]);
+
+// depth 1: 중분류 — 볼드, 2칸 들여쓰기
+const DEPTH1_KEYWORDS = new Set([
+  // ── BS 일반 (K-IFRS / K-GAAP 공통) ──
+  "유동자산", "비유동자산", "유동부채", "비유동부채",
+  "당좌자산", "고정자산", "고정부채",           // K-GAAP
+  "투자자산", "재고자산", "기타비유동자산",
+  "투자부동산",
+
+  // ── BS 자본 구성 ──
+  "자본금", "자본잉여금", "자본조정",
+  "이익잉여금", "결손금",
+  "기타포괄손익누계액", "기타자본항목", "기타자본구성요소",
+  "매각예정자산", "매각예정부채",
+
+  // ── BS 연결 전용 ──
+  "지배기업지분", "지배기업소유주지분", "지배주주지분",
+  "비지배지분", "소수주주지분",
+  "연결자본잉여금", "연결이익잉여금", "연결기타포괄손익누계액",
+
+  // ── BS 금융업 대분류 ──
+  "현금및예치금", "유가증권", "대출채권",
+  "차입부채", "기타부채", "기타자산",
+  "파생상품자산", "파생상품부채",
+  "당기손익인식금융자산", "기타포괄손익인식금융자산",
+  "상각후원가측정금융자산", "당기손익-공정가치측정금융자산",
+  "기타포괄손익-공정가치측정금융자산",
+  // ── BS 보험업 ──
+  "보험계약자산", "보험계약부채", "재보험자산", "재보험부채",
+
+  // ── IS 일반 (전 산업) ──
+  "매출원가", "매출총이익", "매출총이익(손실)", "매출총손실",
+  "판매비와관리비", "판매비와일반관리비", "판관비",
+  "영업외수익", "영업외비용",
+  "기타수익", "기타비용", "기타영업외수익", "기타영업외비용",
+  "금융수익", "금융비용", "금융원가", "순금융수익", "순금융비용", "순금융원가",
+  "법인세비용", "법인세수익", "법인세비용(수익)",
+  "계속영업이익", "계속영업손실", "계속영업이익(손실)",
+  "중단영업이익", "중단영업손실", "중단영업이익(손실)", "중단영업손익",
+  "기타포괄손익", "기타포괄이익", "기타포괄손실",
+  "수익(매출액)",
+
+  // ── IS 금융업 ──
+  "이자수익", "이자비용",
+  "대출평가및처분손실", "대출채권평가및처분손실", "대출채권평가및처분이익",
+  "유가증권평가및처분손실", "유가증권평가및처분이익",
+  "수수료수익", "수수료비용",
+
+  // ── IS 건설업 ──
+  "공사원가", "도급원가", "건설원가", "분양원가",
+
+  // ── IS 보험업 ──
+  "보험서비스비용", "보험금비용", "보험서비스수익",
+]);
+
+function detectAccountDepth(accountNm: string, _sjFilter: string[]): number {
   const nm = accountNm.replace(/\s/g, "");
-  const isBs = sjFilter.includes("BS");
-  const isIs = sjFilter.includes("IS") || sjFilter.includes("CIS");
 
-  // depth 0: 총계/합계 (굵은 글씨, 들여쓰기 없음)
-  const totalKeywords = [
-    "자산총계", "자산합계", "부채총계", "부채합계", "자본총계", "자본합계",
-    "부채와자본총계", "부채및자본총계", "자본과부채총계",
-    "매출액", "영업수익", "영업이익", "영업이익(손실)", "영업손실",
-    "당기순이익", "당기순이익(손실)", "당기순손실", "당기순손익",
-    "법인세비용차감전순이익", "법인세비용차감전순손익",
-    "총포괄손익", "총포괄이익",
-  ];
-  if (totalKeywords.some((k) => nm === k)) return 0;
+  // depth 0: 총계
+  if (DEPTH0_KEYWORDS.has(nm)) return 0;
 
-  // depth 1: 중분류 (소계 수준)
-  const midKeywords = [
-    // BS 일반
-    "유동자산", "비유동자산", "유동부채", "비유동부채",
-    "자본금", "이익잉여금", "기타자본항목", "기타포괄손익누계액",
-    "자본잉여금", "자본조정",
-    // BS 금융업 대분류 (현금및예치금 → 대출채권 → 유가증권 등)
-    "현금및예치금", "유가증권", "대출채권", "차입부채", "기타부채", "기타자산",
-    "투자자산", "재고자산", "투자부동산",
-    // BS 부채/자본 중분류
-    "지배기업지분", "소수주주지분", "비지배지분",
-    "연결자본잉여금", "연결기타포괄손익누계액", "연결이익잉여금",
-    // IS
-    "매출원가", "매출총이익", "판매비와관리비",
-    "기타수익", "기타비용", "금융수익", "금융비용", "금융원가",
-    "법인세비용", "영업외수익", "영업외비용",
-    "수익(매출액)", "이자수익", "이자비용",
-    // IS 금융업
-    "대출평가및처분손실", "대출채권평가및처분손실",
-    "대출채권평가및처분이익", "유가증권평가및처분손실", "유가증권평가및처분이익",
-  ];
-  if (midKeywords.some((k) => nm === k)) return 1;
+  // depth 1: 중분류
+  if (DEPTH1_KEYWORDS.has(nm)) return 1;
 
-  // 감사보고서 패턴: Ⅰ.유동자산, Ⅱ.비유동자산, (1)당좌자산 등 → depth 1
+  // 감사보고서 로마숫자 패턴: Ⅰ.유동자산, Ⅱ.비유동자산 등 → depth 1
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩIVivx]+[.·]/.test(nm)) return 1;
+  // 감사보고서 괄호숫자 패턴: (1)당좌자산, (2)재고자산 등 → depth 1
   if (/^\([0-9]+\)/.test(nm)) return 1;
 
-  // 감사보고서 패턴: 1.현금, 2.매출채권 등 → depth 2
+  // 감사보고서 숫자 패턴: 1.현금, 2.매출채권 등 → depth 2
   if (/^[0-9]+[.·]/.test(nm)) return 2;
 
   // 소계/합계 패턴
   if (nm.includes("소계") || nm.includes("합계")) return 1;
 
-  // depth 2: 나머지 (세부 항목)
+  // depth 2: 나머지 세부 항목
   return 2;
+}
+
+/**
+ * 합계 감지 알고리즘: 금액 합산으로 부모-자식 관계 자동 추론
+ * - 연속된 depth 2 항목들의 합이 바로 앞 항목의 값과 일치하면, 앞 항목을 depth 1로 승격
+ * - 총계 항목(depth 0)과 연속 depth 2 항목 합이 일치하면 중간 depth 1이 누락된 것
+ */
+function refineDepthBySumDetection(
+  rows: { nm: string; depth: number }[],
+  yearData: Record<string, Record<string, string>>,
+  displayYears: string[]
+): void {
+  if (rows.length < 3 || displayYears.length === 0) return;
+
+  // 가장 데이터가 많은 연도 선택
+  const targetYear = displayYears.reduce((best, y) => {
+    const countA = Object.keys(yearData[best] || {}).length;
+    const countB = Object.keys(yearData[y] || {}).length;
+    return countB > countA ? y : best;
+  }, displayYears[0]);
+  const vals = yearData[targetYear] || {};
+
+  const getVal = (nm: string): number | null => {
+    const raw = vals[nm];
+    if (!raw || raw.trim() === "-" || raw.trim() === "") return null;
+    const v = parseFloat(raw.replace(/,/g, ""));
+    return isNaN(v) ? null : v;
+  };
+
+  let skipUntil = -1; // 승격된 부모의 자식 영역을 건너뛰기 위한 인덱스
+  for (let i = 0; i < rows.length - 1; i++) {
+    const cur = rows[i];
+    // depth 0 또는 1은 이미 확정, 건너뜀
+    if (cur.depth !== 2) { skipUntil = -1; continue; }
+    // 이전 승격된 부모의 자식 영역이면 건너뜀
+    if (i <= skipUntil) continue;
+
+    const parentVal = getVal(cur.nm);
+    if (parentVal === null || parentVal === 0) continue;
+
+    // 바로 뒤에 연속된 depth 2 항목들의 합 계산
+    let sum = 0;
+    let childCount = 0;
+    let lastChildIdx = i;
+    for (let j = i + 1; j < rows.length; j++) {
+      const next = rows[j];
+      // depth 0 또는 1을 만나면 중단 (다른 섹션 진입)
+      if (next.depth <= 1) break;
+      const v = getVal(next.nm);
+      if (v !== null) {
+        sum += v;
+        childCount++;
+        lastChildIdx = j;
+      }
+    }
+
+    // 2개 이상 자식이 있고 합이 부모와 일치(±1 허용, 백만원 단위 반올림 오차)
+    if (childCount >= 2 && Math.abs(sum - parentVal) <= 1) {
+      cur.depth = 1;
+      skipUntil = lastChildIdx; // 자식 영역 건너뛰기
+    }
+  }
 }
 
 // ── 표준 손익계산서 계정과목 순서 (DART ord 필드가 부정확한 경우 대비) ──
@@ -440,6 +553,9 @@ function buildStatements(
     accountOrder.length = 0;
     accountOrder.push(...reordered);
   }
+
+  // 합계 감지: 금액 합산으로 부모-자식 관계 자동 보정
+  refineDepthBySumDetection(accountOrder, yearData, displayYears);
 
   const rows: FinancialRow[] = [];
   for (const { nm: acct, depth } of accountOrder) {
