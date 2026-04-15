@@ -6,7 +6,7 @@ const secret = new TextEncoder().encode(JWT_SECRET_KEY);
 const COOKIE_NAME = "loan-app-token";
 
 // Public paths that don't require authentication
-const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/auth/logout"];
+const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/auth/logout", "/docx-gen.html", "/api/review/upload-and-generate", "/api/dart/health"];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

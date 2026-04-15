@@ -137,3 +137,9 @@ export function findCorpCode(
 
   return bestMatch ? { corpCode: bestMatch.corpCode, stockCode: bestMatch.stockCode } : null;
 }
+
+export function findStockCodeByCorpCode(corpCode: string): string {
+  const codes = loadCorpCodes();
+  const entry = codes.find((e) => e.c === corpCode);
+  return entry?.s || "";
+}

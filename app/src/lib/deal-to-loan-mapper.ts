@@ -1,5 +1,6 @@
 import type { ReviewDeal, ReviewOpinion, FinancialSnapshot, FinancialRow, FinancialIndicator } from '@/types/review';
-import type { LoanApplication, LoanType, FinancialStatements, StatementLineItem, UnresolvedItem } from '@/lib/loan-engine/types';
+import type { LoanApplication, LoanType, FinancialStatements, StatementLineItem, UnresolvedItem, RelatedEntityFinancials } from '@/lib/loan-engine/types';
+import type { DartCompanyInfo } from '@/lib/dart-api';
 
 // ─── Parsers ────────────────────────────────────────────────
 
@@ -181,12 +182,67 @@ function parseCollateralSecurity(s: string): { no: number; description: string }
   return lines.map((desc, i) => ({ no: i + 1, description: desc }));
 }
 
+// ─── DART Company Info Helpers ──────────────────────────────
+
+/** "1234567890" → "123-45-67890" */
+function formatBizrNo(s: string): string {
+  const d = s.replace(/[^0-9]/g, '');
+  if (d.length !== 10) return s;
+  return `${d.slice(0, 3)}-${d.slice(3, 5)}-${d.slice(5)}`;
+}
+
+/** "1234561234567" → "123456-1234567" */
+function formatJurirNo(s: string): string {
+  const d = s.replace(/[^0-9]/g, '');
+  if (d.length !== 13) return s;
+  return `${d.slice(0, 6)}-${d.slice(6)}`;
+}
+
+/** "20100315" → "2010-03-15" */
+function formatEstDt(s: string): string {
+  const d = s.replace(/[^0-9]/g, '');
+  if (d.length !== 8) return s;
+  return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`;
+}
+
+/** DART corpCls → display string */
+function mapCorpCls(cls: string): string {
+  const map: Record<string, string> = {
+    'Y': '유가증권 상장',
+    'K': '코스닥 상장',
+    'N': '비상장',
+    'E': '기타',
+  };
+  return map[cls] || cls;
+}
+
+/** KSIC 2-digit code → industry name */
+const INDUSTRY_MAP: Record<string, string> = {
+  '01': '농업', '02': '임업', '03': '어업', '05': '석탄광업',
+  '10': '식료품제조', '20': '화학제조', '24': '금속제조', '25': '금속가공',
+  '26': '전자부품', '29': '기계장비', '30': '자동차', '35': '전기가스',
+  '41': '건설업', '42': '토목건설', '45': '자동차판매', '46': '도매업',
+  '47': '소매업', '49': '육상운송', '52': '창고운송', '55': '숙박업',
+  '58': '출판업', '59': '영상제작', '61': '통신업', '62': '정보서비스',
+  '63': '정보서비스', '64': '금융업', '65': '보험업', '66': '금융서비스',
+  '68': '부동산업', '70': '연구개발', '71': '전문서비스', '72': '건축설계',
+  '73': '기술서비스', '74': '사업서비스', '75': '사업지원',
+};
+
+function lookupIndustryName(code: string): string {
+  if (!code) return '';
+  const prefix2 = code.slice(0, 2);
+  return INDUSTRY_MAP[prefix2] || '';
+}
+
 // ─── Main Mapper ────────────────────────────────────────────
 
 export function dealToLoanApplication(
   deal: ReviewDeal,
   opinions: ReviewOpinion[],
   dartFinancials?: FinancialStatements,
+  dartCompanyInfo?: DartCompanyInfo,
+  dartRelatedEntities?: RelatedEntityFinancials[],
 ): LoanApplication {
   const parsed = parseLoanTermsString(deal.금리수수료기간 || '');
   const amount = parseAmount(deal.모집금액 || '');
@@ -231,7 +287,7 @@ export function dealToLoanApplication(
   let unresolvedNo = 1;
   if (!parsed.rate) unresolvedItems.push({ no: unresolvedNo++, section: '기본조건', item: '대출금리', status: '[TBD: 협의 중]' });
   if (parsed.fee) unresolvedItems.push({ no: unresolvedNo++, section: '기본조건', item: '취급수수료', status: `참여수수료 ${parsed.fee} (확정 필요)` });
-  if (!deal.재무현황?.length && !dartFinancials) unresolvedItems.push({ no: unresolvedNo++, section: '재무현황', item: '재무제표', status: '[TBD: DART 조회 또는 업로드 필요]' });
+  if (!deal.재무현황?.length && !dartFinancials && !dartCompanyInfo) unresolvedItems.push({ no: unresolvedNo++, section: '재무현황', item: '재무제표', status: '[TBD: DART 조회 또는 업로드 필요]' });
   if (collateralItems.length <= 1) unresolvedItems.push({ no: unresolvedNo++, section: '담보/보전', item: '담보 상세 목록', status: '[TBD: 담보평가 후]' });
 
   return {
@@ -242,12 +298,17 @@ export function dealToLoanApplication(
       officer: deal.당행접수자 || '',
     },
     borrower: {
-      name: deal.차주 || '[TBD]',
-      representative: '[TBD: 확인 필요]',
-      businessNumber: '[TBD]',
-      establishedDate: '[TBD]',
-      industry: deal.tags?.find(t => t.includes('업') || t.includes('금융') || t.includes('건설')) || '[TBD]',
-      address: deal.주소 || '[TBD]',
+      name: deal.차주 || dartCompanyInfo?.corpName || '[TBD]',
+      representative: dartCompanyInfo?.ceoNm || '[TBD: 확인 필요]',
+      businessNumber: dartCompanyInfo?.bizrNo ? formatBizrNo(dartCompanyInfo.bizrNo) : '[TBD]',
+      corporateNumber: dartCompanyInfo?.jurirNo ? formatJurirNo(dartCompanyInfo.jurirNo) : undefined,
+      establishedDate: dartCompanyInfo?.estDt ? formatEstDt(dartCompanyInfo.estDt) : '[TBD]',
+      industry: lookupIndustryName(dartCompanyInfo?.indutyCode || '')
+        || deal.tags?.find(t => t.includes('업') || t.includes('금융') || t.includes('건설'))
+        || '[TBD]',
+      address: deal.주소 || dartCompanyInfo?.adres || '[TBD]',
+      companyType: dartCompanyInfo?.corpCls ? mapCorpCls(dartCompanyInfo.corpCls) : undefined,
+      fiscalMonth: dartCompanyInfo?.accMt ? parseInt(dartCompanyInfo.accMt) : undefined,
     },
     loanTerms: {
       loanType,
@@ -290,7 +351,9 @@ export function dealToLoanApplication(
     },
     financials: {
       borrower: borrowerFs,
-      relatedCompanies: relatedStatements.length > 0 ? relatedStatements : undefined,
+      relatedCompanies: [...relatedStatements, ...(dartRelatedEntities || [])].length > 0
+        ? [...relatedStatements, ...(dartRelatedEntities || [])]
+        : undefined,
     },
     borrowings: [],
     typeSpecific: {
