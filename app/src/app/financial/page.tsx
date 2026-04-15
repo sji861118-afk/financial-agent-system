@@ -66,6 +66,7 @@ interface FinancialResult {
   };
   bsItems: FinancialRow[];
   isItems: FinancialRow[];
+  cfItems?: FinancialRow[];
   ratios: Record<string, Record<string, string>>;
   years: string[];
   source: string;
@@ -90,6 +91,7 @@ interface FinancialResult {
   hasOfs?: boolean;
   bsItemsCfs?: FinancialRow[];
   isItemsCfs?: FinancialRow[];
+  cfItemsCfs?: FinancialRow[];
   ratiosCfs?: Record<string, Record<string, string>>;
   hasCfs?: boolean;
   borrowingNotes?: {
@@ -307,7 +309,14 @@ function FinancialContent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ corpName: companyName, corpCode: selectedCorpCode, years }),
       });
-      const data = await res.json();
+      // Vercel 크래시 시 non-JSON 응답 대응
+      const text = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(res.status >= 500 ? `서버 오류 (${res.status}) — 잠시 후 다시 시도해 주세요.` : `응답 파싱 실패 (${res.status})`);
+      }
       if (data.success) {
         setResult(data.result);
         if (!data.result.hasData) {
@@ -327,8 +336,13 @@ function FinancialContent() {
       } else {
         toast.error(data.error || "조회 실패");
       }
-    } catch {
-      toast.error("서버 연결 실패");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "";
+      if (msg.includes("timeout") || msg.includes("abort")) {
+        toast.error("조회 시간 초과 — 잠시 후 다시 시도해 주세요.", { duration: 8000 });
+      } else {
+        toast.error(`서버 연결 실패${msg ? ": " + msg : ""}`, { duration: 8000 });
+      }
     } finally {
       setLoading(false);
     }

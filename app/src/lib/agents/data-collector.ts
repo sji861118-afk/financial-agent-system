@@ -40,8 +40,8 @@ export async function collectData(req: CollectRequest): Promise<CollectResult> {
         ceoNm: "", jurirNo: "", bizrNo: "", adres: "",
         estDt: "", indutyCode: "", accMt: "", stockCode: "", corpCls: "",
       },
-      bsItems: [], isItems: [], ratios: {}, hasOfs: false,
-      bsItemsCfs: [], isItemsCfs: [], ratiosCfs: {}, hasCfs: false,
+      bsItems: [], isItems: [], cfItems: [], ratios: {}, hasOfs: false,
+      bsItemsCfs: [], isItemsCfs: [], cfItemsCfs: [], ratiosCfs: {}, hasCfs: false,
       years: req.years, source: "", hasData: false,
       noDataReason: `DART 조회 실패: ${e}`,
     };

@@ -1,5 +1,5 @@
 import { type NextRequest } from "next/server";
-import { findCorpCode } from "@/lib/dart-corp-codes";
+import { findCorpCode, findStockCodeByCorpCode } from "@/lib/dart-corp-codes";
 import { buildFinancialData, fetchAuditOpinion, fetchShareholders, fetchBorrowingNotes, type FinancialResult } from "@/lib/dart-api";
 import { fetchFisisFinancialData, convertFisisToFinancialRows } from "@/lib/fisis-api";
 import { analyzeFinancial } from "@/lib/financial-analyzer";
@@ -30,17 +30,26 @@ const DART_CACHE_TTL = 5 * 60 * 1000; // 5분
 
 export async function POST(request: NextRequest) {
   try {
-    // 인증 및 일일 조회 제한 체크
+    // 인증 및 일일 조회 제한 체크 (타임아웃 가드 — Firebase 미응답 시 조회 자체가 블로킹되지 않도록)
     const userId = request.headers.get("x-user-id") || "";
     const userName = request.headers.get("x-user-name") || "";
 
     if (userId) {
-      const limitCheck = await checkDailyLimit(userId);
-      if (!limitCheck.allowed) {
-        return Response.json(
-          { success: false, error: `일일 조회 제한(${limitCheck.limit}건)을 초과했습니다. 내일 다시 시도해주세요.` },
-          { status: 429 }
-        );
+      try {
+        const limitCheck = await Promise.race([
+          checkDailyLimit(userId),
+          new Promise<{ allowed: true; remaining: -1; limit: 0 }>((resolve) =>
+            setTimeout(() => resolve({ allowed: true, remaining: -1, limit: 0 }), 5000)
+          ),
+        ]);
+        if (!limitCheck.allowed) {
+          return Response.json(
+            { success: false, error: `일일 조회 제한(${limitCheck.limit}건)을 초과했습니다. 내일 다시 시도해주세요.` },
+            { status: 429 }
+          );
+        }
+      } catch (e) {
+        console.error("[Auth] checkDailyLimit failed, proceeding:", e);
       }
     }
 
@@ -54,15 +63,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 활동 로그 기록
+    // 활동 로그 기록 (fire-and-forget — 응답을 블로킹하지 않음)
     if (userId) {
-      await logActivity(userId, userName, "query", `재무조회: ${corpName || directCorpCode}`);
+      Promise.resolve().then(() => logActivity(userId, userName, "query", `재무조회: ${corpName || directCorpCode}`)).catch(() => {});
     }
 
     // corpCode가 직접 전달되면 그대로 사용 (동명 기업 구분)
     let corp: { corpCode: string; stockCode: string } | null = null;
     if (directCorpCode) {
-      corp = { corpCode: directCorpCode, stockCode: "" };
+      corp = { corpCode: directCorpCode, stockCode: findStockCodeByCorpCode(directCorpCode) };
     } else {
       corp = findCorpCode(corpName);
     }
@@ -87,8 +96,8 @@ export async function POST(request: NextRequest) {
               // FISIS 전용 응답 구성
               const fisisResult = {
                 companyInfo: { corpCode: "", corpName: fisisData.companyName, ceoNm: "", jurirNo: "", bizrNo: "", adres: "", estDt: "", indutyCode: "64", accMt: "", stockCode: "", corpCls: "" },
-                bsItems: converted.bsItems, isItems: converted.isItems, ratios: converted.ratios,
-                hasOfs: true, bsItemsCfs: [] as any[], isItemsCfs: [] as any[], ratiosCfs: {}, hasCfs: false,
+                bsItems: converted.bsItems, isItems: converted.isItems, cfItems: [] as any[], ratios: converted.ratios,
+                hasOfs: true, bsItemsCfs: [] as any[], isItemsCfs: [] as any[], cfItemsCfs: [] as any[], ratiosCfs: {}, hasCfs: false,
                 years: converted.displayYears, source: `FISIS 금융통계정보시스템 (${fisisData.partName})`, hasData: true,
               };
               // 분석 실행 후 바로 반환
@@ -156,7 +165,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 재무분석 + NICE + 감사의견 + 주주현황을 병렬 실행
+    // 재무분석 + NICE + 주주현황을 병렬 실행
+    // ※ fetchBorrowingNotes, fetchAuditOpinion은 DART ZIP 다운로드 필요 → Vercel US서버에서 20초+ 소요 → 스킵
+    //   (차입금 주석/감사의견은 Excel 부가정보이며, 핵심 재무제표 조회에 영향 없음)
     let analysis = null;
     let niceRating: { grade: string; gradeDate: string; gradeAgency: string; available: boolean } | null = null;
     let auditOpinion = null;
@@ -165,7 +176,7 @@ export async function POST(request: NextRequest) {
 
     const latestYear = String(Math.max(...displayYears.map(Number)));
 
-    const [analysisResult, niceResult, auditResult, shareholdersResult, borrowingResult] = await Promise.allSettled([
+    const [analysisResult, niceResult, shareholdersResult] = await Promise.allSettled([
       Promise.resolve().then(() => analyzeFinancial({
         company: result.companyInfo,
         bsItemsOfs: result.bsItems,
@@ -179,21 +190,15 @@ export async function POST(request: NextRequest) {
         years: result.years,
       })),
       fetchNiceCreditRating(corpName, result.companyInfo?.bizrNo),
-      fetchAuditOpinion(corp.corpCode, displayYears),
       fetchShareholders(corp.corpCode, latestYear),
-      fetchBorrowingNotes(corp.corpCode, displayYears),
     ]);
 
     if (analysisResult.status === "fulfilled") analysis = analysisResult.value;
     else console.error("Financial analysis error:", analysisResult.reason);
     if (niceResult.status === "fulfilled") niceRating = niceResult.value;
     else console.error("NICE rating error:", niceResult.reason);
-    if (auditResult.status === "fulfilled") auditOpinion = auditResult.value;
-    else console.error("Audit opinion error:", auditResult.reason);
     if (shareholdersResult.status === "fulfilled") shareholders = shareholdersResult.value;
     else console.error("Shareholders error:", shareholdersResult.reason);
-    if (borrowingResult.status === "fulfilled") borrowingNotes = borrowingResult.value;
-    else console.error("Borrowing notes error:", borrowingResult.reason);
 
     // 전문가 소견 (룰 기반 자체분석 — 외부 API 미사용)
     let aiAnalysis = null;
@@ -284,86 +289,32 @@ export async function POST(request: NextRequest) {
           fs.writeFileSync(filePath, excelBuffer);
         } catch { /* serverless에서 실패해도 무시 */ }
 
-        // DataStore에 파일 기록 (base64 포함)
-        const store = getDataStore();
-        await store.saveFile({
-          name: filename,
-          size: fileSize,
-          type: "재무분석",
-          createdAt: new Date().toISOString(),
-          downloadUrl: excelBase64 || undefined,
+        // DataStore 저장은 응답 후 비동기 처리 (waitUntil 불가하므로 fire-and-forget)
+        const _excelBase64ForSave = excelBase64;
+        const _filename = filename;
+        const _fileSize = fileSize;
+        Promise.resolve().then(async () => {
+          try {
+            const store = getDataStore();
+            await store.saveFile({ name: _filename!, size: _fileSize, type: "재무분석", createdAt: new Date().toISOString(), downloadUrl: _excelBase64ForSave || undefined });
+          } catch { /* non-blocking */ }
         });
       } catch (e) {
         console.error("Excel generation error:", e);
       }
     }
 
-    // 조회 이력 저장
-    try {
-      const store = getDataStore();
-      await store.saveQuery({
-        corpName,
-        years: displayYears,
-        type: "재무조회",
-        status: "complete",
-        result: {
-          filename: filename || undefined,
-          grade: analysis?.overallGrade,
-          summary: analysis?.overallSummary?.slice(0, 200),
-        },
-        createdAt: new Date().toISOString(),
-      });
-    } catch (e) {
-      console.error("Save query error:", e);
-    }
+    // 조회 이력 저장 (fire-and-forget)
+    Promise.resolve().then(async () => {
+      try {
+        const store = getDataStore();
+        await store.saveQuery({ corpName, years: displayYears, type: "재무조회", status: "complete", result: { filename: filename || undefined, grade: analysis?.overallGrade, summary: analysis?.overallSummary?.slice(0, 200) }, createdAt: new Date().toISOString() });
+      } catch { /* non-blocking */ }
+    });
 
-    // ── QA 검수 (에이전트 시스템) ──
-    let qaReport = null;
-    let qaEscalations = null;
-    try {
-      const { runQAVerification } = await import("@/lib/agents/qa-verifier");
-      // 원본 스냅샷 구성 (검수 기준)
-      const snapshotRows = (rows: any[], years: string[]) =>
-        rows.map((r: any) => {
-          const values: Record<string, string | number | undefined> = {};
-          for (const y of years) { if (r[y] !== undefined) values[y] = r[y]; }
-          return { account: r.account, values };
-        });
-      const snapshot = {
-        collectedAt: new Date().toISOString(),
-        sources: [{ type: "DART" as const, label: `DART ${corpName}` }],
-        dartBsRaw: snapshotRows(result.bsItems, result.years),
-        dartIsRaw: snapshotRows(result.isItems, result.years),
-        years: result.years,
-      };
-      const mergedData = {
-        bsItems: result.bsItems,
-        isItems: result.isItems,
-        years: result.years,
-        mergeStats: { dartItemCount: result.bsItems.length + result.isItems.length, uploadItemCount: 0, mergedItemCount: result.bsItems.length + result.isItems.length, unmatchedItems: [] },
-      };
-      // 분석 결과가 있으면 주요 비율 추출
-      let analysisForQA = undefined;
-      if (analysis) {
-        const latestYear = result.years[result.years.length - 1];
-        const keyRatios: Record<string, number | undefined> = {};
-        for (const r of analysis.stabilityRatios || []) {
-          if (r.name.includes("부채비율") && r.values?.[latestYear] != null) keyRatios.debtRatio = r.values[latestYear]!;
-          if (r.name.includes("유동비율") && r.values?.[latestYear] != null) keyRatios.currentRatio = r.values[latestYear]!;
-        }
-        for (const r of analysis.profitabilityRatios || []) {
-          if (r.name.includes("ROA") && r.values?.[latestYear] != null) keyRatios.roa = r.values[latestYear]!;
-          if (r.name.includes("ROE") && r.values?.[latestYear] != null) keyRatios.roe = r.values[latestYear]!;
-        }
-        analysisForQA = { report: analysis, keyRatios };
-      }
-      const qaResult = runQAVerification(snapshot, mergedData, analysisForQA as any);
-      qaReport = qaResult.qaReport;
-      qaEscalations = qaResult.escalations.length > 0 ? qaResult.escalations : null;
-      console.log(`[QA] 검수 결과: ${qaReport.status} (${qaReport.checks.map((c: any) => `${c.type}:${c.result}`).join(", ")})`);
-    } catch (e) {
-      console.error("QA verification error (non-blocking):", e);
-    }
+    // QA 검수 스킵 (Vercel 시간 절약 — 로컬에서만 의미 있음)
+    const qaReport = null;
+    const qaEscalations = null;
 
     // 응답 조립
     const responseAnalysis = analysis
@@ -390,10 +341,12 @@ export async function POST(request: NextRequest) {
         companyInfo: result.companyInfo,
         bsItems: result.bsItems,
         isItems: result.isItems,
+        cfItems: result.cfItems,
         ratios: result.ratios,
         hasOfs: result.hasOfs,
         bsItemsCfs: result.bsItemsCfs,
         isItemsCfs: result.isItemsCfs,
+        cfItemsCfs: result.cfItemsCfs,
         ratiosCfs: result.ratiosCfs,
         hasCfs: result.hasCfs,
         years: result.years,
@@ -410,16 +363,20 @@ export async function POST(request: NextRequest) {
         borrowingNotes,
         filename,
         fileSize,
-        excelBase64,
+        // Excel base64: 3MB 이하만 응답에 포함 (Vercel 4.5MB 응답 제한 대비)
+        excelBase64: excelBase64 && excelBase64.length < 3 * 1024 * 1024 ? excelBase64 : null,
+        excelTooLarge: excelBase64 && excelBase64.length >= 3 * 1024 * 1024 ? true : undefined,
         // QA 검수 결과 (에이전트 시스템)
         qaReport,
         qaEscalations,
       },
     });
-  } catch (error) {
-    console.error("DART financial error:", error);
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? error.stack?.split("\n").slice(0, 3).join(" | ") : "";
+    console.error("DART financial error:", msg, stack);
     return Response.json(
-      { success: false, error: `조회 오류: ${error}` },
+      { success: false, error: `조회 오류: ${msg}` },
       { status: 500 }
     );
   }

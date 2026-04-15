@@ -344,28 +344,6 @@ function formatEstDate(estDt: string): string {
   return estDt || "-";
 }
 
-/**
- * Calculate year-over-year percentage change between two string-formatted numbers.
- * Returns formatted string like "12.3%" or null if not calculable.
- */
-function calcYoyChange(
-  currentStr: string,
-  previousStr: string
-): string | null {
-  try {
-    const curr = parseFloat(
-      String(currentStr).replace(/,/g, "").replace(/\s/g, "")
-    );
-    const prev = parseFloat(
-      String(previousStr).replace(/,/g, "").replace(/\s/g, "")
-    );
-    if (isNaN(curr) || isNaN(prev) || prev === 0) return null;
-    const change = ((curr - prev) / Math.abs(prev)) * 100;
-    return `${change.toFixed(1)}%`;
-  } catch {
-    return null;
-  }
-}
 
 function writeSectionHeader(
   ws: ExcelJS.Worksheet,
@@ -544,7 +522,8 @@ function createFinancialSheet(
     ws.getColumn(i + 2).width = 15;
   }
   if (years.length > 0) {
-    ws.getColumn(years.length + 2).width = 12;
+    ws.getColumn(years.length + 2).width = 15; // 증감액
+    ws.getColumn(years.length + 3).width = 12; // 증감률
   }
 
   let row = 1;
@@ -662,8 +641,9 @@ function createFinancialSheet(
         ws.getCell(row, ci + 2).value = `'${yr.slice(2)}.12.31`;
       }
     }
-    ws.getCell(row, years.length + 2).value = "전년비 증감";
-    applyHeaderStyle(ws, row, 1, years.length + 2);
+    ws.getCell(row, years.length + 2).value = "전년비 증감액";
+    ws.getCell(row, years.length + 3).value = "전년비 증감률";
+    applyHeaderStyle(ws, row, 1, years.length + 3);
     row += 1;
 
     // Freeze panes below header
@@ -722,23 +702,30 @@ function createFinancialSheet(
           cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF0F0F0" } };
         }
 
-        // YoY change for last year
+        // YoY change for last year — 증감액 + 증감률 두 컬럼
         if (ci === years.length - 1 && prevVal !== undefined) {
-          const chg = calcYoyChange(String(valStr), prevVal);
-          if (chg !== null) {
-            const chgCell = ws.getCell(row, years.length + 2);
-            // Parse YoY change percentage as number
-            const chgStripped = chg.replace(/%/g, "").trim();
-            const chgParsed = parseFloat(chgStripped);
-            if (!isNaN(chgParsed)) {
-              chgCell.value = chgParsed / 100;
-              chgCell.numFmt = "0.0%";
-            } else {
-              chgCell.value = chg;
+          const currNum = parseFloat(String(valStr).replace(/,/g, "").trim());
+          const prevNum = parseFloat(String(prevVal).replace(/,/g, "").trim());
+          if (!isNaN(currNum) && !isNaN(prevNum)) {
+            // 증감액 (절대 금액)
+            const diff = currNum - prevNum;
+            const diffCell = ws.getCell(row, years.length + 2);
+            diffCell.value = diff;
+            diffCell.numFmt = "#,##0";
+            diffCell.font = NORMAL_FONT;
+            diffCell.alignment = RIGHT_ALIGN;
+            diffCell.border = THIN_BORDER;
+
+            // 증감률 (%)
+            if (prevNum !== 0) {
+              const pctChange = ((currNum - prevNum) / Math.abs(prevNum)) * 100;
+              const pctCell = ws.getCell(row, years.length + 3);
+              pctCell.value = pctChange / 100;
+              pctCell.numFmt = "0.0%";
+              pctCell.font = NORMAL_FONT;
+              pctCell.alignment = RIGHT_ALIGN;
+              pctCell.border = THIN_BORDER;
             }
-            chgCell.font = NORMAL_FONT;
-            chgCell.alignment = RIGHT_ALIGN;
-            chgCell.border = THIN_BORDER;
           }
         }
         prevVal = String(valStr);

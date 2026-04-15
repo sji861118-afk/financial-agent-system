@@ -92,7 +92,7 @@ async function fetchFinancialItems(
     });
     const url = `${DART_API_BASE}/fnlttSinglAcntAll.json?${params}`;
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(12_000) });
       const d = await res.json();
       if (d.status === "000" && d.list?.length) {
         if (reprt !== "11011") {
@@ -100,7 +100,8 @@ async function fetchFinancialItems(
         }
         return { items: d.list, reprtCode: reprt };
       }
-    } catch {
+    } catch (e) {
+      console.warn(`[DART] fetchFinancialItems ${year}/${reprt}/${fsDiv} failed:`, e instanceof Error ? e.message : e);
       continue;
     }
   }
@@ -167,11 +168,13 @@ export interface FinancialResult {
   // 개별(OFS)
   bsItems: FinancialRow[];
   isItems: FinancialRow[];
+  cfItems: FinancialRow[];   // 현금흐름표
   ratios: Record<string, Record<string, string>>;
   hasOfs: boolean;
   // 연결(CFS)
   bsItemsCfs: FinancialRow[];
   isItemsCfs: FinancialRow[];
+  cfItemsCfs: FinancialRow[]; // 현금흐름표(연결)
   ratiosCfs: Record<string, Record<string, string>>;
   hasCfs: boolean;
   years: string[];
@@ -574,7 +577,8 @@ function buildStatements(
 function calcRatios(
   bsRows: FinancialRow[],
   isRows: FinancialRow[],
-  years: string[]
+  years: string[],
+  cfRows: FinancialRow[] = []
 ): Record<string, Record<string, string>> {
   // 정확 매칭 우선, 부분 매칭 fallback
   function get(rows: FinancialRow[], keywords: string[], year: string): number {
@@ -782,20 +786,40 @@ function calcRatios(
     // === IS 항목 ===
     let rev = getExact(isRows, ["매출액", "영업수익", "수익(매출액)", "공사수익", "분양수익"], year);
     if (rev === 0) rev = get(isRows, ["매출액", "영업수익", "공사수익", "분양수익"], year);
+    // 보험업: 보험수익/보험료수익/수입보험료 → 매출 역할
+    if (rev === 0) rev = get(isRows, ["보험수익", "보험료수익", "수입보험료", "보험서비스수익"], year);
+    // 금융업: 순영업수익/이자수익합계 → 매출 역할
+    if (rev === 0) rev = get(isRows, ["순영업수익", "순영업수익합계", "영업수익합계", "이자수익합계", "순이자손익"], year);
     revByYear[year] = rev;
 
     let op = getExact(isRows, ["영업이익", "영업이익(손실)", "영업손익", "영업손실"], year);
     if (op === 0) op = get(isRows, ["영업이익", "영업손실"], year);
+    // 보험업: 보험서비스손익/보험영업이익 → 영업이익 역할
+    if (op === 0) op = get(isRows, ["보험서비스손익", "보험영업이익", "보험영업손익", "보험손익"], year);
 
     let ni = getExact(isRows, ["당기순이익", "당기순이익(손실)", "당기순손익", "당기순손실"], year);
     if (ni === 0) ni = get(isRows, ["당기순이익", "당기순손실"], year);
 
-    // 감가상각비 (EBITDA 산출용 — BS/IS 양쪽에서 탐색)
-    let depreciation = get(isRows, ["감가상각비", "감가상각비용"], year);
-    if (depreciation === 0) depreciation = get(bsRows, ["감가상각비"], year);
-    // 무형자산상각비
-    let amortization = get(isRows, ["무형자산상각비", "무형자산감가상각비", "사용권자산상각비"], year);
-    // 감가상각비가 0이면 CF에서 조정항목으로 잡힌 경우 — bsRows에서 부분 매칭 시도
+    // 감가상각비 (EBITDA 산출용 — 현금흐름표(CF) 우선, IS/BS fallback)
+    // CF의 영업활동 조정항목에 감가상각비/무형자산상각비가 정확히 표시됨
+    let depreciation = 0;
+    let amortization = 0;
+    if (cfRows.length > 0) {
+      depreciation = get(cfRows, ["감가상각비", "감가상각비용", "유형자산감가상각비"], year);
+      amortization = get(cfRows, ["무형자산상각비", "무형자산감가상각비", "사용권자산상각비", "사용권자산감가상각비"], year);
+      // CF에서 음수로 표시되는 경우 절대값 사용 (비현금 조정항목은 양수가 정상)
+      depreciation = Math.abs(depreciation);
+      amortization = Math.abs(amortization);
+    }
+    // CF에서 못 찾으면 IS → BS fallback
+    if (depreciation === 0) {
+      depreciation = Math.abs(get(isRows, ["감가상각비", "감가상각비용"], year));
+      if (depreciation === 0) depreciation = Math.abs(get(bsRows, ["감가상각비"], year));
+    }
+    if (amortization === 0) {
+      amortization = Math.abs(get(isRows, ["무형자산상각비", "무형자산감가상각비", "사용권자산상각비"], year));
+    }
+    // 그래도 0이면 bsRows에서 부분 매칭 시도
     if (depreciation === 0 && amortization === 0) {
       for (const r2 of bsRows) {
         const nm = normalizeAcct(r2.account);
@@ -806,8 +830,12 @@ function calcRatios(
       }
     }
 
-    // 이자비용 (EBITDA/이자비율용)
-    let interestExpense = get(isRows, ["이자비용", "금융비용", "금융원가"], year);
+    // 이자비용 (EBITDA/이자비율용) — 음수 부호 제거 (IS에서 비용은 음수 표기될 수 있음)
+    let interestExpense = Math.abs(get(isRows, ["이자비용", "금융비용", "금융원가"], year));
+    // CF에서 이자비용이 더 정확할 수 있음 (IS에 없는 경우 fallback)
+    if (interestExpense === 0 && cfRows.length > 0) {
+      interestExpense = Math.abs(get(cfRows, ["이자비용", "이자의지급", "이자지급"], year));
+    }
 
     // EBITDA = 영업이익 + 감가상각비 + 무형자산상각비
     const ebitda = op + depreciation + amortization;
@@ -864,12 +892,13 @@ async function fetchKeyAccounts(
     });
     const url = `${DART_API_BASE}/fnlttSinglAcnt.json?${params}`;
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(12_000) });
       const d = await res.json();
       if (d.status === "000" && d.list?.length) {
         return d.list;
       }
-    } catch {
+    } catch (e) {
+      console.warn(`[DART] fetchKeyAccounts ${year}/${reprt} failed:`, e instanceof Error ? e.message : e);
       continue;
     }
   }
@@ -1136,17 +1165,17 @@ async function parseOneAuditXml(
       // IS 시작 — 이미 IS 완료 시 재진입 방지
       if (!isCompleted) {
         if (text.includes("손익계산서") || text.includes("포괄손익계산서")) { section = "is_header"; continue; }
-        // IS 첫 항목 패턴 (건설업 공사수익/분양수익 포함)
-        const IS_START_RE = /영업수익|매출액|공사수익|분양수익|도급수익|보험수익/;
+        // IS 첫 항목 패턴 (건설/보험/금융업 포함)
+        const IS_START_RE = /영업수익|매출액|공사수익|분양수익|도급수익|보험수익|보험료수익|수입보험료|순영업수익|이자수익합계/;
         if (section === "is_header" && IS_START_RE.test(first)) section = "is";
         // IS 시작: 로마숫자 + 매출액/영업수익 패턴 (주석 번호 포함 가능)
         const firstClean = first.replace(/\(주석[^)]*\)/g, "");
-        if (/^(영업수익|매출액|공사수익|분양수익|Ⅰ\.?(영업수익|매출액|공사수익)|I\.?(영업수익|매출액|공사수익))/.test(firstClean) && section !== "is") section = "is";
+        if (/^(영업수익|매출액|공사수익|분양수익|보험수익|보험료수익|수입보험료|순영업수익|Ⅰ\.?(영업수익|매출액|공사수익|보험수익)|I\.?(영업수익|매출액|공사수익|보험수익))/.test(firstClean) && section !== "is") section = "is";
         // BS 종료 직후 IS 첫 항목이 나오면 IS 시작
-        if (section === "bs_done" && (IS_START_RE.test(firstClean) || /Ⅰ\.?(매출|공사|영업)/.test(firstClean))) section = "is";
+        if (section === "bs_done" && (IS_START_RE.test(firstClean) || /Ⅰ\.?(매출|공사|영업|보험|순영업)/.test(firstClean))) section = "is";
       }
       // bs_done 상태에서 다른 내용이면 아직 IS 시작 전 (단위/기간 표시 등)
-      if (section === "bs_done" && row.length < 3 && !/매출|영업수익|공사수익|분양수익/.test(first)) continue;
+      if (section === "bs_done" && row.length < 3 && !/매출|영업수익|공사수익|분양수익|보험수익|보험료수익|순영업수익/.test(first)) continue;
 
       // IS 종료: 주당이익/주당손익 이후 나오는 비IS 항목
       if (section === "is" && /^(기본주당|희석주당|주당)/.test(first)) continue; // 주당 항목 스킵
@@ -1364,34 +1393,39 @@ async function fetchAuditReportData(
   const cfsYears = Object.keys(cfsMap);
   console.log(`[DART] 보고서 발견 — 개별: ${ofsYears.join(",")||"없음"} / 연결: ${cfsYears.join(",")||"없음"}`);
 
-  // 2. 개별 감사보고서 파싱
+  // 2. 개별 + 연결 감사보고서 병렬 파싱 (Vercel US→DART KR 레이턴시 최소화)
   let ofsResult: AuditReportResult["ofs"] = null;
-  if (ofsYears.length) {
+  let cfsResult: AuditReportResult["cfs"] = null;
+
+  // 개별 + 연결을 동시에 파싱 (각 연도도 병렬)
+  const [ofsEntries, cfsEntries] = await Promise.all([
+    ofsYears.length > 0
+      ? Promise.all(ofsYears.sort().reverse().map(async (yr) => {
+          const parsed = await parseOneAuditXml(ofsMap[yr], yr);
+          if (parsed) console.log(`[DART] ${yr}년 개별 감사보고서: BS ${parsed.bsRows.length}행, IS ${parsed.isRows.length}행`);
+          return parsed;
+        }))
+      : Promise.resolve([] as (Awaited<ReturnType<typeof parseOneAuditXml>>)[]),
+    cfsYears.length > 0
+      ? Promise.all(cfsYears.sort().reverse().map(async (yr) => {
+          const parsed = await parseOneAuditXml(cfsMap[yr], yr);
+          if (parsed) console.log(`[DART] ${yr}년 연결 감사보고서: BS ${parsed.bsRows.length}행, IS ${parsed.isRows.length}행`);
+          return parsed;
+        }))
+      : Promise.resolve([] as (Awaited<ReturnType<typeof parseOneAuditXml>>)[]),
+  ]);
+
+  if (ofsEntries.length) {
     const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], dataYears: [] as string[] };
-    for (const yr of ofsYears.sort().reverse()) {
-      const parsed = await parseOneAuditXml(ofsMap[yr], yr);
-      if (parsed) {
-        mergeAuditResults(acc, parsed);
-        console.log(`[DART] ${yr}년 개별 감사보고서: BS ${parsed.bsRows.length}행, IS ${parsed.isRows.length}행`);
-      }
-    }
+    for (const parsed of ofsEntries) { if (parsed) mergeAuditResults(acc, parsed); }
     if (acc.bsRows.length || acc.isRows.length) {
       acc.dataYears = [...new Set(acc.dataYears)].sort();
       ofsResult = acc;
     }
   }
-
-  // 3. 연결 감사보고서 파싱
-  let cfsResult: AuditReportResult["cfs"] = null;
-  if (cfsYears.length) {
+  if (cfsEntries.length) {
     const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], dataYears: [] as string[] };
-    for (const yr of cfsYears.sort().reverse()) {
-      const parsed = await parseOneAuditXml(cfsMap[yr], yr);
-      if (parsed) {
-        mergeAuditResults(acc, parsed);
-        console.log(`[DART] ${yr}년 연결 감사보고서: BS ${parsed.bsRows.length}행, IS ${parsed.isRows.length}행`);
-      }
-    }
+    for (const parsed of cfsEntries) { if (parsed) mergeAuditResults(acc, parsed); }
     if (acc.bsRows.length || acc.isRows.length) {
       acc.dataYears = [...new Set(acc.dataYears)].sort();
       cfsResult = acc;
@@ -1409,12 +1443,15 @@ function processRawStatements(
   allRaw: Record<string, DartRawItem[]>,
   years: string[],
   yearReprtMap?: Record<string, string>
-): { bsRows: FinancialRow[]; isRows: FinancialRow[]; ratios: Record<string, Record<string, string>> } {
+): { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; ratios: Record<string, Record<string, string>> } {
   const bsRows = buildStatements(allRaw, years, ["BS"], yearReprtMap);
   const hasIS = Object.values(allRaw).some((items) => items.some((it) => it.sj_div === "IS"));
   const isRows = buildStatements(allRaw, years, hasIS ? ["IS"] : ["CIS"], yearReprtMap);
-  const ratios = calcRatios(bsRows, isRows, years);
-  return { bsRows, isRows, ratios };
+  // 현금흐름표(CF) 데이터 추출 — EBITDA 산출용 감가상각비/무형자산상각비 소스
+  const hasCF = Object.values(allRaw).some((items) => items.some((it) => it.sj_div === "CF"));
+  const cfRows = hasCF ? buildStatements(allRaw, years, ["CF"], yearReprtMap) : [];
+  const ratios = calcRatios(bsRows, isRows, years, cfRows);
+  return { bsRows, isRows, cfRows, ratios };
 }
 
 export async function buildFinancialData(
@@ -1428,10 +1465,12 @@ export async function buildFinancialData(
     companyInfo,
     bsItems: [],
     isItems: [],
+    cfItems: [],
     ratios: {},
     hasOfs: false,
     bsItemsCfs: [],
     isItemsCfs: [],
+    cfItemsCfs: [],
     ratiosCfs: {},
     hasCfs: false,
     years,
@@ -1455,8 +1494,25 @@ export async function buildFinancialData(
 
     const quarterlyWarnings: string[] = [];
     const yearReprtMap: Record<string, string> = {}; // year → reprtCode
-    for (const year of years) {
-      const { items: raw, reprtCode } = await fetchFinancialItems(corpCode, year, fsDiv);
+
+    // 연도별 API 호출을 병렬 실행 (Vercel US→DART KR 레이턴시 최소화)
+    // Promise.allSettled: 한 연도 실패해도 나머지 결과 유지
+    const settled = await Promise.allSettled(
+      years.map(async (year) => {
+        const { items: raw, reprtCode } = await fetchFinancialItems(corpCode, year, fsDiv);
+        return { year, raw, reprtCode };
+      })
+    );
+    const yearResults: { year: string; raw: DartRawItem[]; reprtCode: string }[] = [];
+    for (let i = 0; i < settled.length; i++) {
+      if (settled[i].status === "fulfilled") {
+        yearResults.push((settled[i] as PromiseFulfilledResult<{ year: string; raw: DartRawItem[]; reprtCode: string }>).value);
+      } else {
+        console.error(`[DART] ${years[i]}년 ${fsLabel} 조회 실패:`, (settled[i] as PromiseRejectedResult).reason);
+        yearResults.push({ year: years[i], raw: [], reprtCode: "" });
+      }
+    }
+    for (const { year, raw, reprtCode } of yearResults) {
       rawByYear[year] = raw;
       if (raw.length) {
         hasData = true;
@@ -1472,7 +1528,7 @@ export async function buildFinancialData(
     if (!hasData) continue;
     gotFull = true;
 
-    const { bsRows, isRows, ratios } = processRawStatements(rawByYear, years, yearReprtMap);
+    const { bsRows, isRows, cfRows, ratios } = processRawStatements(rawByYear, years, yearReprtMap);
 
     // 분기보고서 연도의 컬럼 헤더를 "2025" → "2025.09" 등으로 변경
     const displayYears = years.map(y => {
@@ -1496,6 +1552,7 @@ export async function buildFinancialData(
     }
     renameYearKeys(bsRows, years, displayYears);
     renameYearKeys(isRows, years, displayYears);
+    renameYearKeys(cfRows, years, displayYears);
 
     // ratios 연도 키도 변경
     const newRatios: Record<string, Record<string, string>> = {};
@@ -1508,11 +1565,13 @@ export async function buildFinancialData(
     if (fsDiv === "OFS") {
       result.bsItems = bsRows;
       result.isItems = isRows;
+      result.cfItems = cfRows;
       result.ratios = newRatios;
       result.hasOfs = true;
     } else {
       result.bsItemsCfs = bsRows;
       result.isItemsCfs = isRows;
+      result.cfItemsCfs = cfRows;
       result.ratiosCfs = newRatios;
       result.hasCfs = true;
     }
@@ -1535,8 +1594,19 @@ export async function buildFinancialData(
   if (!isNonListed) {
     console.log("[DART] 전체재무제표 없음 → 주요계정(fnlttSinglAcnt) API 시도");
     const keyAccountsRaw: Record<string, DartRawItem[]> = {};
+    const keySettled = await Promise.allSettled(
+      years.map(async (year) => ({ year, items: await fetchKeyAccounts(corpCode, year) }))
+    );
+    for (const s of keySettled) {
+      if (s.status === "fulfilled") {
+        keyAccountsRaw[s.value.year] = s.value.items;
+      } else {
+        console.error("[DART] fetchKeyAccounts failed:", s.reason);
+      }
+    }
+    // 실패한 연도는 빈 배열
     for (const year of years) {
-      keyAccountsRaw[year] = await fetchKeyAccounts(corpCode, year);
+      if (!keyAccountsRaw[year]) keyAccountsRaw[year] = [];
     }
 
     const keyResult = tryKeyAccounts(keyAccountsRaw, years);
@@ -1634,7 +1704,7 @@ export async function fetchBorrowingNotes(
       pblntf_ty: "F",
       page_count: "50",
     });
-    const res = await fetch(`${DART_API_BASE}/list.json?${params}`);
+    const res = await fetch(`${DART_API_BASE}/list.json?${params}`, { signal: AbortSignal.timeout(10000) });
     const d = await res.json();
 
     if (d.status !== "000" || !d.list) return null;
@@ -1666,7 +1736,7 @@ export async function fetchBorrowingNotes(
     if (!rceptNo) return null;
 
     const docParams = new URLSearchParams({ crtfc_key: apiKey, rcept_no: rceptNo });
-    const docRes = await fetch(`${DART_API_BASE}/document.xml?${docParams}`);
+    const docRes = await fetch(`${DART_API_BASE}/document.xml?${docParams}`, { signal: AbortSignal.timeout(20000) });
     const rawBuf = Buffer.from(await docRes.arrayBuffer());
 
     if (rawBuf[0] !== 0x50 || rawBuf[1] !== 0x4B) return null;
