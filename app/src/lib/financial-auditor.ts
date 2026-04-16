@@ -133,7 +133,42 @@ export function auditFinancialData(result: FinancialResult): AuditReport {
 
   if (result.hasOfs) checkKeyAccounts(result.bsItems, result.isItems, "개별");
 
-  // === 5. 비율 이상치 검증 ===
+  // === 5. BS 항목 분류 검증: 부채 계정이 자산 영역에 있는지 ===
+  function checkBsClassification(bs: FinancialRow[], label: string) {
+    let section: "asset" | "liab" | "equity" | "done" = "asset";
+    for (const item of bs) {
+      const acct = item.account.replace(/[\s()\-·]/g, "");
+      if (acct === "자산총계") { section = "liab"; continue; }
+      if (acct === "부채총계") { section = "equity"; continue; }
+      if (acct === "자본총계") { section = "done"; continue; }
+
+      // 부채 키워드가 자산 영역에 있으면 경고
+      if (section === "asset" && acct.includes("부채")) {
+        findings.push({
+          severity: "ERROR",
+          category: "BS 분류 오류",
+          account: item.account,
+          message: `[${label}] "${item.account}"은 부채 항목인데 자산 영역에 배치됨`,
+          suggestion: "BS 정렬 로직(classifyBsSectionByName)에 해당 계정 추가 필요",
+        });
+      }
+      // 자본 키워드가 부채 영역에 있으면 경고
+      if (section === "liab" && /자본금|자본잉여금|이익잉여금|자기주식/.test(acct)) {
+        findings.push({
+          severity: "ERROR",
+          category: "BS 분류 오류",
+          account: item.account,
+          message: `[${label}] "${item.account}"은 자본 항목인데 부채 영역에 배치됨`,
+          suggestion: "BS 정렬 로직에 해당 계정 추가 필요",
+        });
+      }
+    }
+  }
+
+  if (result.hasOfs) checkBsClassification(result.bsItems, "개별");
+  if (result.hasCfs && result.bsItemsCfs) checkBsClassification(result.bsItemsCfs, "연결");
+
+  // === 6. 비율 이상치 검증 ===
   for (const yr of years) {
     const ratios = result.ratios[yr] ?? {};
 

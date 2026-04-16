@@ -463,10 +463,13 @@ const BS_EQUITY_KEYWORDS = [
 ];
 
 function classifyBsSectionByName(nm: string): 0 | 1 | 2 | 9 {
-  const n = nm.replace(/[\s()]/g, "");
+  const n = nm.replace(/[\s()\-·]/g, "");
   if (n === "자본과부채총계" || n === "부채와자본총계") return 9;
   if (BS_EQUITY_KEYWORDS.some(k => n === k.replace(/\s/g, "") || n.includes(k.replace(/\s/g, "")))) return 2;
   if (BS_LIAB_KEYWORDS.some(k => n === k.replace(/\s/g, "") || n.includes(k.replace(/\s/g, "")))) return 1;
+  // 일반 규칙: 계정명에 "부채"가 포함되면 부채 (당기손익-공정가치측정금융부채 등)
+  if (n.includes("부채")) return 1;
+  if (/미지급|선수금|예수금|매입채무/.test(n)) return 1;
   return 0; // 자산
 }
 
