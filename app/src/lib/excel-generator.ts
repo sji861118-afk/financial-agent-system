@@ -109,10 +109,15 @@ export interface ExcelReportData {
   yoyAnalysis?: Array<{
     account: string;
     stmtType: "BS" | "IS";
+    curValue: number;
+    prevValue: number;
     changeAmount: number;
     changePercent: number | null;
-    noteRef?: string;
-    noteText: string;
+    noteNum: string;
+    noteTitle: string;
+    noteSource: string;
+    noteDetail: string;
+    briefRef: string;
   }>;
 }
 
@@ -743,17 +748,17 @@ function createFinancialSheet(
               pctCell.border = THIN_BORDER;
             }
 
-            // 증감사유 (주석 매칭 결과)
+            // 증감사유 간략 참조 (상세는 별도 시트)
             if (hasYoyAnalysis && data.yoyAnalysis) {
               const targetType = stmtType === "BS" ? "BS" : "IS";
               const yoyItem = data.yoyAnalysis.find(
                 (y) => y.account === rawAcct && y.stmtType === targetType
               );
-              if (yoyItem && yoyItem.noteText) {
+              if (yoyItem && yoyItem.briefRef) {
                 const noteCell = ws.getCell(row, years.length + 4);
-                noteCell.value = yoyItem.noteText;
-                noteCell.font = { name: FONT_NAME, size: 9 };
-                noteCell.alignment = { wrapText: true, vertical: "top" };
+                noteCell.value = yoyItem.briefRef;
+                noteCell.font = { name: FONT_NAME, size: 9, color: { argb: "FF4472C4" } };
+                noteCell.alignment = { vertical: "middle" };
                 noteCell.border = THIN_BORDER;
               }
             }
@@ -1304,11 +1309,126 @@ function createPlaceholderSheet(
 // Main export
 // ============================================================
 
+// ============================================================
+// 증감사유분석 시트
+// ============================================================
+
+function createYoYAnalysisSheet(
+  wb: ExcelJS.Workbook,
+  data: ExcelReportData,
+  sheetName: string
+) {
+  const ws = wb.addWorksheet(sheetName, {
+    views: [{ showGridLines: true }],
+  });
+
+  const items = data.yoyAnalysis || [];
+  const bsItems = items.filter(i => i.stmtType === "BS");
+  const isItems = items.filter(i => i.stmtType === "IS");
+
+  // 제목
+  ws.mergeCells("A1:G1");
+  const titleCell = ws.getCell("A1");
+  titleCell.value = "■ 전년대비 주요 증감사유 분석                                              (단위:백만원)";
+  titleCell.font = { name: FONT_NAME, size: 13, bold: true };
+  titleCell.alignment = { vertical: "middle" };
+  ws.getRow(1).height = 30;
+
+  let row = 3;
+
+  function renderSection(sectionItems: typeof items, sectionTitle: string) {
+    ws.mergeCells(row, 1, row, 7);
+    const secCell = ws.getCell(row, 1);
+    secCell.value = sectionTitle;
+    secCell.font = { name: FONT_NAME, size: 11, bold: true };
+    secCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8EEF7" } };
+    secCell.alignment = { vertical: "middle" };
+    ws.getRow(row).height = 24;
+    row += 1;
+
+    const headers = ["계정과목", "전기(백만원)", "당기(백만원)", "증감액", "증감률", "출처", "증감사유 분석"];
+    headers.forEach((h, ci) => {
+      const cell = ws.getCell(row, ci + 1);
+      cell.value = h;
+      cell.font = { name: FONT_NAME, size: FONT_SIZE, bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = HEADER_FILL;
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+      cell.border = THIN_BORDER;
+    });
+    ws.getRow(row).height = 22;
+    row += 1;
+
+    for (const item of sectionItems) {
+      ws.getCell(row, 1).value = item.account;
+      ws.getCell(row, 1).font = { name: FONT_NAME, size: FONT_SIZE, bold: true };
+      ws.getCell(row, 1).border = THIN_BORDER;
+
+      ws.getCell(row, 2).value = item.prevValue;
+      ws.getCell(row, 2).numFmt = "#,##0";
+      ws.getCell(row, 2).font = NORMAL_FONT;
+      ws.getCell(row, 2).alignment = RIGHT_ALIGN;
+      ws.getCell(row, 2).border = THIN_BORDER;
+
+      ws.getCell(row, 3).value = item.curValue;
+      ws.getCell(row, 3).numFmt = "#,##0";
+      ws.getCell(row, 3).font = NORMAL_FONT;
+      ws.getCell(row, 3).alignment = RIGHT_ALIGN;
+      ws.getCell(row, 3).border = THIN_BORDER;
+
+      ws.getCell(row, 4).value = item.changeAmount;
+      ws.getCell(row, 4).numFmt = "#,##0";
+      ws.getCell(row, 4).font = {
+        name: FONT_NAME, size: FONT_SIZE,
+        color: { argb: item.changeAmount >= 0 ? "FF0070C0" : "FFFF0000" },
+      };
+      ws.getCell(row, 4).alignment = RIGHT_ALIGN;
+      ws.getCell(row, 4).border = THIN_BORDER;
+
+      if (item.changePercent !== null) {
+        ws.getCell(row, 5).value = item.changePercent / 100;
+        ws.getCell(row, 5).numFmt = "0.0%";
+      } else {
+        ws.getCell(row, 5).value = "-";
+      }
+      ws.getCell(row, 5).font = NORMAL_FONT;
+      ws.getCell(row, 5).alignment = RIGHT_ALIGN;
+      ws.getCell(row, 5).border = THIN_BORDER;
+
+      ws.getCell(row, 6).value = item.noteSource || "-";
+      ws.getCell(row, 6).font = { name: FONT_NAME, size: 9, color: { argb: "FF4472C4" } };
+      ws.getCell(row, 6).alignment = { vertical: "middle" };
+      ws.getCell(row, 6).border = THIN_BORDER;
+
+      ws.getCell(row, 7).value = item.noteDetail || "(주석 미매칭)";
+      ws.getCell(row, 7).font = { name: FONT_NAME, size: 9 };
+      ws.getCell(row, 7).alignment = { wrapText: true, vertical: "top" };
+      ws.getCell(row, 7).border = THIN_BORDER;
+
+      const textLen = (item.noteDetail || "").length;
+      ws.getRow(row).height = Math.max(20, Math.min(80, Math.ceil(textLen / 60) * 15));
+      row += 1;
+    }
+    row += 1;
+  }
+
+  if (bsItems.length > 0) renderSection(bsItems, "【 재무상태표 (BS) 주요 증감 】");
+  if (isItems.length > 0) renderSection(isItems, "【 손익계산서 (IS) 주요 증감 】");
+
+  ws.getColumn(1).width = 25;
+  ws.getColumn(2).width = 16;
+  ws.getColumn(3).width = 16;
+  ws.getColumn(4).width = 16;
+  ws.getColumn(5).width = 12;
+  ws.getColumn(6).width = 28;
+  ws.getColumn(7).width = 60;
+  ws.views = [{ state: "frozen", ySplit: 2, xSplit: 0 }];
+
+  ws.getCell(row, 1).value = "※ DART 감사보고서 주석에서 자동 추출";
+  ws.getCell(row, 1).font = { name: FONT_NAME, size: 9, italic: true, color: { argb: "FF888888" } };
+}
+
 /**
- * Generate an Excel report buffer for the 여신승인신청서 자동화 system.
- *
- * @param data - Report data including financial statements and analysis
- * @returns Buffer containing the xlsx file
+ * Generate an Excel report buffer
  */
 export async function generateExcelReport(
   data: ExcelReportData
@@ -1452,7 +1572,13 @@ export async function generateExcelReport(
     bnSheet.getCell(`A${bnRow}`).font = { name: FONT_NAME, size: 9, italic: true, color: { argb: "FF888888" } };
   }
 
-  // 7-10. Placeholder sheets for collateral analysis
+  // 증감사유분석 시트 (yoyAnalysis 데이터 있을 때)
+  if (data.yoyAnalysis && data.yoyAnalysis.length > 0) {
+    tabNum += 1;
+    createYoYAnalysisSheet(wb, data, `${tabNum}.증감사유분석`);
+  }
+
+  // Placeholder sheets for collateral analysis
   tabNum += 1;
   createPlaceholderSheet(
     wb,
