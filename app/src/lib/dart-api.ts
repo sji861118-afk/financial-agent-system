@@ -1478,17 +1478,18 @@ export async function buildFinancialData(
     hasData: false,
   };
 
-  // 비상장 법인 감지: stockCode가 없으면 Stage 1/2 생략 → Stage 3 직행
+  // 비상장 법인 감지 (stockCode 빈값)
+  // 단, 비상장이라도 외감법인(corp_cls=E)은 fnlttSinglAcntAll 데이터가 있을 수 있음 (교보생명보험 등)
+  // → Stage 1을 항상 시도하고, 데이터 없으면 Stage 3으로 fallback
   const isNonListed = stockCode !== undefined && stockCode.trim() === "";
   if (isNonListed) {
-    console.log(`[DART] 비상장 법인 감지 (${companyInfo.corpName || corpCode}) → Stage 1/2 생략, 감사보고서(Stage 3) 직접 시도`);
+    console.log(`[DART] 비상장 법인 감지 (${companyInfo.corpName || corpCode}) → Stage 1 시도 후 실패 시 Stage 3 fallback`);
   }
 
   // ── 1단계: 전체재무제표 API (fnlttSinglAcntAll) — OFS + CFS 동시 조회 ──
-  // 비상장 법인은 fnlttSinglAcntAll/fnlttSinglAcnt 데이터 없음 → 바로 Stage 3으로
   let gotFull = false;
 
-  if (!isNonListed) for (const [fsLabel, fsDiv] of [["개별", "OFS"], ["연결", "CFS"]] as const) {
+  for (const [fsLabel, fsDiv] of [["개별", "OFS"], ["연결", "CFS"]] as const) {
     const rawByYear: Record<string, DartRawItem[]> = {};
     let hasData = false;
 
@@ -1591,7 +1592,7 @@ export async function buildFinancialData(
   }
 
   // ── 2단계: 주요계정 API (fnlttSinglAcnt) ──
-  if (!isNonListed) {
+  {
     console.log("[DART] 전체재무제표 없음 → 주요계정(fnlttSinglAcnt) API 시도");
     const keyAccountsRaw: Record<string, DartRawItem[]> = {};
     const keySettled = await Promise.allSettled(
@@ -1624,7 +1625,7 @@ export async function buildFinancialData(
   }
 
   // ── 3단계: 감사보고서 원문(XML) 파싱 — 비상장 직행 또는 1/2단계 실패 시 ──
-  const filingInfo = isNonListed ? { onlyAudit: true } : await checkFilingType(corpCode);
+  const filingInfo = await checkFilingType(corpCode);
   if (filingInfo.onlyAudit || !result.hasData) {
     console.log(`[DART] 주요계정도 없음 → 감사보고서 원문(XML) 파싱 시도 (onlyAudit=${filingInfo.onlyAudit})`);
     const auditResult = await fetchAuditReportData(corpCode, years);
