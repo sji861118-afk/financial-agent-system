@@ -1201,7 +1201,7 @@ function parseAuditNum(s: string): number {
 async function parseOneAuditXml(
   rceptNo: string,
   targetYear: string
-): Promise<{ bsRows: FinancialRow[]; isRows: FinancialRow[]; years: string[]; notesSections?: Record<string, string> } | null> {
+): Promise<{ bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; years: string[]; notesSections?: Record<string, string> } | null> {
   const apiKey = getApiKey();
   try {
     const params = new URLSearchParams({ crtfc_key: apiKey, rcept_no: rceptNo });
@@ -1233,9 +1233,11 @@ async function parseOneAuditXml(
 
     const bsItems: [string, string[]][] = [];
     const isItems: [string, string[]][] = [];
+    const cfItems: [string, string[]][] = [];
     let section: string | null = null;
     let bsCompleted = false;  // BS 파싱 완료 플래그
     let isCompleted = false;  // IS 파싱 완료 플래그
+    let cfCompleted = false;  // CF 파싱 완료 플래그
     // 컬럼 순서 감지: 당기가 먼저인지 전기가 먼저인지
     let columnOrderReversed = false; // true면 전기가 첫 컬럼
 
@@ -1254,18 +1256,30 @@ async function parseOneAuditXml(
       }
 
       // 섹션 종료 검사는 셀 수와 무관하게 항상 수행
-      if (/현금흐름표|이익잉여금처분|자본변동표|이익잉여금변동|제조원가명세서|원가명세서/.test(text)) {
+      if (/현금흐름표/.test(text) && !cfCompleted) {
         if (section === "is") isCompleted = true;
+        section = "cf_header";
+        continue;
+      }
+      if (/이익잉여금처분|자본변동표|이익잉여금변동|제조원가명세서|원가명세서/.test(text)) {
+        if (section === "is") isCompleted = true;
+        if (section === "cf") cfCompleted = true;
         section = null;
       }
       if (/별첨.*주석은|별첨\s*주석은/.test(row[0] || "")) {
         if (section === "is") isCompleted = true;
         if (section === "bs") bsCompleted = true;
+        if (section === "cf") cfCompleted = true;
         section = null;
       }
-      if (section === "is" && /영업활동으로인한|투자활동으로인한|재무활동으로인한|현금의증가|기초의현금|기말의현금/.test(text)) {
+      // CF 시작 감지: IS 이후 영업활동 키워드 → CF 진입
+      if (section === "cf_header" && /영업활동/.test(text)) {
+        section = "cf";
+      }
+      // IS에서 갑자기 CF 키워드가 나오면 IS 종료 + CF 시작
+      if (section === "is" && /영업활동으로인한|영업활동현금흐름/.test(text)) {
         isCompleted = true;
-        section = null;
+        section = "cf";
       }
       if (section === "is" && /\d{4}\.\d{1,2}\.\d{1,2}\s*\(?(전기초|전기말|당기초|당기말)/.test(row[0] || "")) {
         isCompleted = true;
@@ -1274,8 +1288,22 @@ async function parseOneAuditXml(
 
       if (row.length < 2) continue;
 
-      // BS/IS 모두 완료되었으면 더 이상 파싱하지 않음
-      if (bsCompleted && isCompleted) continue;
+      // BS/IS/CF 모두 완료되었으면 더 이상 파싱하지 않음
+      if (bsCompleted && isCompleted && cfCompleted) continue;
+      // CF 종료: 기말의 현금 이후
+      if (section === "cf" && /기말의?현금|현금및현금성자산의?감소|현금및현금성자산의?기말/.test(text)) {
+        // 기말 현금 행은 포함 후 CF 종료
+        const cfNums: string[] = [];
+        for (const c of row.slice(1)) {
+          const ct = c.trim();
+          if (/^\d{1,2}(,\s*\d{1,2})*$/.test(ct)) continue;
+          if (/\d{3,}/.test(ct) || ct === "-" || /^[\s(]*0[\s)]*$/.test(ct)) cfNums.push(ct);
+        }
+        if (cfNums.length) cfItems.push([row[0].trim(), cfNums]);
+        cfCompleted = true;
+        section = null;
+        continue;
+      }
 
       // BS 시작 감지 — 이미 BS 완료 시 재진입 방지
       if (!bsCompleted) {
@@ -1317,22 +1345,20 @@ async function parseOneAuditXml(
 
       // (부채와자본총계 처리는 위에서 bs_done 전환 시 수행)
 
-      if (section !== "bs" && section !== "is") continue;
+      if (section !== "bs" && section !== "is" && section !== "cf") continue;
       const nums: string[] = [];
       for (const c of row.slice(1)) {
         const ct = c.trim();
-        // 금액 셀: 3연속 숫자 이상, "-", 또는 "0" (괄호 포함)
-        // 주석번호 "4,5,6,7" 등은 제외 (콤마 사이 1~2자리만 있는 패턴)
-        if (/^\d{1,2}(,\s*\d{1,2})*$/.test(ct)) continue; // 주석번호 패턴 스킵
+        if (/^\d{1,2}(,\s*\d{1,2})*$/.test(ct)) continue;
         if (/\d{3,}/.test(ct) || ct === "-" || /^[\s(]*0[\s)]*$/.test(ct)) nums.push(ct);
       }
       if (!nums.length) continue;
       const acctName = row[0].trim();
       if (!acctName) continue;
-      // 숫자로만 된 행(ord 잔재) 스킵
       if (/^\d+$/.test(acctName.replace(/\s/g, ""))) continue;
       if (section === "bs") bsItems.push([acctName, nums]);
       else if (section === "is") isItems.push([acctName, nums]);
+      else if (section === "cf") cfItems.push([acctName, nums]);
     }
 
     if (!bsItems.length && !isItems.length) return null;
@@ -1391,6 +1417,7 @@ async function parseOneAuditXml(
     return {
       bsRows: extractTwoYears(bsItems, targetYear, prevYear, columnOrderReversed),
       isRows: extractTwoYears(isItems, targetYear, prevYear, columnOrderReversed),
+      cfRows: extractTwoYears(cfItems, targetYear, prevYear, columnOrderReversed),
       years: [targetYear, prevYear],
       notesSections: Object.keys(notesSections).length > 0 ? notesSections : undefined,
     };
@@ -1458,8 +1485,8 @@ function extractNoteSections(htmlContent: string): Record<string, string> {
 
 // 연도별 파싱 결과 병합
 function mergeAuditResults(
-  accumulated: { bsRows: FinancialRow[]; isRows: FinancialRow[]; dataYears: string[] },
-  parsed: { bsRows: FinancialRow[]; isRows: FinancialRow[]; years: string[] }
+  accumulated: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; dataYears: string[] },
+  parsed: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; years: string[] }
 ): void {
   function mergeRows(accRows: FinancialRow[], newRows: FinancialRow[], years: string[]) {
     // 같은 계정명이 여러 번 나올 수 있으므로 occurrence 카운트로 매칭
@@ -1495,9 +1522,11 @@ function mergeAuditResults(
   if (!accumulated.bsRows.length && !accumulated.isRows.length) {
     accumulated.bsRows = parsed.bsRows;
     accumulated.isRows = parsed.isRows;
+    accumulated.cfRows = parsed.cfRows;
   } else {
     mergeRows(accumulated.bsRows, parsed.bsRows, parsed.years);
     mergeRows(accumulated.isRows, parsed.isRows, parsed.years);
+    mergeRows(accumulated.cfRows, parsed.cfRows, parsed.years);
   }
   for (const y of parsed.years) {
     if (!accumulated.dataYears.includes(y)) accumulated.dataYears.push(y);
@@ -1505,8 +1534,8 @@ function mergeAuditResults(
 }
 
 interface AuditReportResult {
-  ofs: { bsRows: FinancialRow[]; isRows: FinancialRow[]; dataYears: string[] } | null;
-  cfs: { bsRows: FinancialRow[]; isRows: FinancialRow[]; dataYears: string[] } | null;
+  ofs: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; dataYears: string[] } | null;
+  cfs: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; dataYears: string[] } | null;
   notesSections?: Record<string, string>;
 }
 
@@ -1614,7 +1643,7 @@ async function fetchAuditReportData(
   const mergedNotes: Record<string, string> = {};
 
   if (ofsEntries.length) {
-    const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], dataYears: [] as string[] };
+    const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], cfRows: [] as FinancialRow[], dataYears: [] as string[] };
     for (const parsed of ofsEntries) {
       if (parsed) {
         mergeAuditResults(acc, parsed);
@@ -1632,7 +1661,7 @@ async function fetchAuditReportData(
     }
   }
   if (cfsEntries.length) {
-    const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], dataYears: [] as string[] };
+    const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], cfRows: [] as FinancialRow[], dataYears: [] as string[] };
     for (const parsed of cfsEntries) {
       if (parsed) {
         mergeAuditResults(acc, parsed);
@@ -1884,9 +1913,11 @@ export async function buildFinancialData(
       const filteredYears = filterYearsToRange(auditResult.ofs.dataYears);
       const bsRows = filterRowsToRange(auditResult.ofs.bsRows, filteredYears, auditResult.ofs.dataYears);
       const isRows = filterRowsToRange(auditResult.ofs.isRows, filteredYears, auditResult.ofs.dataYears);
-      const ratios = calcRatios(bsRows, isRows, filteredYears);
+      const cfRows = filterRowsToRange(auditResult.ofs.cfRows, filteredYears, auditResult.ofs.dataYears);
+      const ratios = calcRatios(bsRows, isRows, filteredYears, cfRows);
       result.bsItems = bsRows;
       result.isItems = isRows;
+      result.cfItems = cfRows;
       result.ratios = ratios;
       result.hasOfs = true;
       result.years = filteredYears;
@@ -1898,9 +1929,11 @@ export async function buildFinancialData(
       const filteredYears = filterYearsToRange(auditResult.cfs.dataYears);
       const bsRows = filterRowsToRange(auditResult.cfs.bsRows, filteredYears, auditResult.cfs.dataYears);
       const isRows = filterRowsToRange(auditResult.cfs.isRows, filteredYears, auditResult.cfs.dataYears);
-      const ratios = calcRatios(bsRows, isRows, filteredYears);
+      const cfRows = filterRowsToRange(auditResult.cfs.cfRows, filteredYears, auditResult.cfs.dataYears);
+      const ratios = calcRatios(bsRows, isRows, filteredYears, cfRows);
       result.bsItemsCfs = bsRows;
       result.isItemsCfs = isRows;
+      result.cfItemsCfs = cfRows;
       result.ratiosCfs = ratios;
       result.hasCfs = true;
       if (!result.hasOfs) result.years = filteredYears;

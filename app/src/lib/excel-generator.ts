@@ -68,8 +68,10 @@ export interface ExcelReportData {
   years: string[];
   bsItemsOfs: StatementItem[];
   isItemsOfs: StatementItem[];
+  cfItemsOfs?: StatementItem[];
   bsItemsCfs: StatementItem[];
   isItemsCfs: StatementItem[];
+  cfItemsCfs?: StatementItem[];
   ratiosOfs: Record<string, Record<string, string>>;
   ratiosCfs: Record<string, Record<string, string>>;
   hasOfs: boolean;
@@ -523,7 +525,7 @@ function createFinancialSheet(
   wb: ExcelJS.Workbook,
   data: ExcelReportData,
   sheetName: string,
-  stmtType: "BS" | "IS",
+  stmtType: "BS" | "IS" | "CF",
   fsDiv: "OFS" | "CFS"
 ): void {
   const ws = wb.addWorksheet(sheetName);
@@ -620,23 +622,19 @@ function createFinancialSheet(
   }
 
   // Title
-  const titleText =
-    stmtType === "BS"
-      ? `■ 재무상태표${fsLabel}                                              (단위:백만원)`
-      : `■ 손익계산서${fsLabel}                                              (단위:백만원)`;
+  const stmtLabels: Record<string, string> = { BS: "재무상태표", IS: "손익계산서", CF: "현금흐름표" };
+  const titleText = `■ ${stmtLabels[stmtType] || stmtType}${fsLabel}                                              (단위:백만원)`;
   ws.getCell(row, 1).value = titleText;
   ws.getCell(row, 1).font = SECTION_FONT;
   row += 1;
 
   // Pick data
   const items =
-    fsDiv === "OFS"
-      ? stmtType === "BS"
-        ? data.bsItemsOfs
-        : data.isItemsOfs
-      : stmtType === "BS"
-        ? data.bsItemsCfs
-        : data.isItemsCfs;
+    stmtType === "CF"
+      ? fsDiv === "OFS" ? data.cfItemsOfs : data.cfItemsCfs
+      : fsDiv === "OFS"
+        ? stmtType === "BS" ? data.bsItemsOfs : data.isItemsOfs
+        : stmtType === "BS" ? data.bsItemsCfs : data.isItemsCfs;
 
   const ratios = fsDiv === "OFS" ? data.ratiosOfs : data.ratiosCfs;
   const hasData = fsDiv === "OFS" ? data.hasOfs : data.hasCfs;
@@ -669,6 +667,9 @@ function createFinancialSheet(
 
     // Freeze panes below header
     ws.views = [{ state: "frozen", ySplit: row - 1, xSplit: 0 }];
+
+    // 행 번호 추적 (셀 수식용)
+    const acctRowMap = new Map<string, number>(); // 정규화된 계정명 → 행번호
 
     // Data rows — depth 기반 들여쓰기
     for (const item of items) {
@@ -766,61 +767,154 @@ function createFinancialSheet(
         }
         prevVal = String(valStr);
       }
+      // 계정명 → 행번호 매핑 (수식 참조용)
+      const acctNorm = acct.replace(/[\s()]/g, "");
+      if (!acctRowMap.has(acctNorm)) acctRowMap.set(acctNorm, row);
       row += 1;
     }
 
-    // Ratio rows
+    // Ratio rows — 셀 수식 적용
     row += 1;
-    const ratioNames =
-      stmtType === "BS"
-        ? ["총차입금", "순차입금", "부채비율", "유동비율", "자기자본비율", "차입금의존도"]
-        : ["영업이익률", "총자산이익률(ROA)", "자기자본이익률(ROE)", "EBITDA", "EBITDA/이자비용", "이자보상배율", "매출증가율"];
 
-    if (ratios) {
-      const amountRatios = ["총차입금", "순차입금", "EBITDA"];
-      for (const rName of ratioNames) {
-        ws.getCell(row, 1).value = rName;
-        ws.getCell(row, 1).font = {
-          name: FONT_NAME,
-          size: FONT_SIZE,
-          bold: true,
-        };
+    // 계정 행 찾기 헬퍼
+    function findRow(...names: string[]): number | null {
+      for (const name of names) {
+        const norm = name.replace(/[\s()]/g, "");
+        const r = acctRowMap.get(norm);
+        if (r) return r;
+      }
+      return null;
+    }
+    // 엑셀 컬럼 문자 (B=2, C=3, ...)
+    function colLetter(ci: number): string {
+      return String.fromCharCode(65 + ci + 1); // 0→B, 1→C, ...
+    }
+
+    if (ratios && stmtType === "BS") {
+      // BS 비율: 총차입금, 순차입금, 부채비율, 유동비율, 자기자본비율, 차입금의존도
+      const bsRatioConfig: { name: string; formula: (col: string) => string | null; fmt: string }[] = [];
+      const rDebt = findRow("부채총계");
+      const rEquity = findRow("자본총계");
+      const rAssets = findRow("자산총계");
+      const rCash = findRow("현금및현금성자산", "현금및예치금", "현금");
+      const rBorr = findRow("차입부채", "단기차입금");
+
+      bsRatioConfig.push(
+        { name: "총차입금", formula: () => null, fmt: "#,##0" }, // 서버 계산값 사용 (복잡한 합산)
+        { name: "순차입금", formula: () => null, fmt: "#,##0" },
+        { name: "부채비율", formula: (c) => rDebt && rEquity ? `=${c}${rDebt}/${c}${rEquity}*100` : null, fmt: '0.0"%"' },
+        { name: "유동비율", formula: () => null, fmt: '0.0"%"' }, // 유동자산/유동부채 — 보험업 등 유동 구분 없을 수 있음
+        { name: "자기자본비율", formula: (c) => rEquity && rAssets ? `=${c}${rEquity}/${c}${rAssets}*100` : null, fmt: '0.0"%"' },
+        { name: "차입금의존도", formula: () => null, fmt: '0.0"%"' },
+      );
+
+      for (const cfg of bsRatioConfig) {
+        ws.getCell(row, 1).value = cfg.name;
+        ws.getCell(row, 1).font = { name: FONT_NAME, size: FONT_SIZE, bold: true };
         ws.getCell(row, 1).border = THIN_BORDER;
         ws.getCell(row, 1).fill = RATIO_FILL;
 
         for (let ci = 0; ci < years.length; ci++) {
           const yr = years[ci];
-          const yrRatios = ratios[yr] ?? {};
-          const val = yrRatios[rName] ?? "-";
           const cell = ws.getCell(row, ci + 2);
+          const col = colLetter(ci);
+          const formula = cfg.formula(col);
 
-          const valString = String(val);
-          if (valString.endsWith("%")) {
-            const numStr = valString.replace(/%/g, "").replace(/,/g, "").trim();
-            const numVal = parseFloat(numStr);
-            if (!isNaN(numVal)) {
-              cell.value = numVal;
-              cell.numFmt = '0.0"%"';
-            } else {
-              cell.value = val;
-            }
-          } else if (amountRatios.includes(rName)) {
-            const numStr = valString.replace(/,/g, "").trim();
-            const numVal = parseFloat(numStr);
-            if (!isNaN(numVal)) {
-              cell.value = numVal;
-              cell.numFmt = "#,##0";
-            } else {
-              cell.value = val;
-            }
+          if (formula) {
+            cell.value = { formula } as any;
           } else {
-            cell.value = val;
+            // 서버 계산값 사용
+            const yrRatios = ratios[yr] ?? {};
+            const val = yrRatios[cfg.name] ?? "-";
+            const valStr = String(val);
+            if (valStr.endsWith("%")) {
+              const n = parseFloat(valStr.replace(/%|,/g, ""));
+              if (!isNaN(n)) { cell.value = n; } else { cell.value = val; }
+            } else {
+              const n = parseFloat(valStr.replace(/,/g, ""));
+              if (!isNaN(n)) { cell.value = n; } else { cell.value = val; }
+            }
           }
-
+          cell.numFmt = cfg.fmt;
           cell.font = NORMAL_FONT;
           cell.alignment = RIGHT_ALIGN;
           cell.border = THIN_BORDER;
           cell.fill = RATIO_FILL;
+        }
+        row += 1;
+      }
+    } else if (ratios && stmtType === "IS") {
+      // IS 비율: 영업이익률, ROA, ROE, EBITDA, EBITDA/이자비용, 이자보상배율, 매출증가율
+      const rRevenue = findRow("영업수익", "매출액", "공사수익", "보험수익");
+      const rOpIncome = findRow("영업이익", "영업이익(손실)", "영업손익");
+      const rNI = findRow("당기순이익", "당기순이익(손실)", "당기순손익");
+      const rFinCost = findRow("금융비용", "이자비용", "금융원가");
+
+      const isRatioConfig: { name: string; formula: (col: string, ci: number) => string | null; fmt: string }[] = [
+        { name: "영업이익률", formula: (c) => rOpIncome && rRevenue ? `=${c}${rOpIncome}/${c}${rRevenue}*100` : null, fmt: '0.0"%"' },
+        { name: "총자산이익률(ROA)", formula: () => null, fmt: '0.0"%"' },
+        { name: "자기자본이익률(ROE)", formula: () => null, fmt: '0.0"%"' },
+        { name: "EBITDA", formula: () => null, fmt: "#,##0" }, // CF에서 감가상각비 참조해야 → 서버값
+        { name: "EBITDA/이자비용", formula: () => null, fmt: "0.0" },
+        { name: "이자보상배율", formula: (c) => rOpIncome && rFinCost ? `=${c}${rOpIncome}/ABS(${c}${rFinCost})` : null, fmt: '0.0"배"' },
+        { name: "매출증가율", formula: (c, ci) => {
+          if (ci === 0 || !rRevenue) return null;
+          const prevCol = colLetter(ci - 1);
+          return `=(${c}${rRevenue}-${prevCol}${rRevenue})/ABS(${prevCol}${rRevenue})*100`;
+        }, fmt: '0.0"%"' },
+      ];
+
+      for (const cfg of isRatioConfig) {
+        ws.getCell(row, 1).value = cfg.name;
+        ws.getCell(row, 1).font = { name: FONT_NAME, size: FONT_SIZE, bold: true };
+        ws.getCell(row, 1).border = THIN_BORDER;
+        ws.getCell(row, 1).fill = RATIO_FILL;
+
+        for (let ci = 0; ci < years.length; ci++) {
+          const yr = years[ci];
+          const cell = ws.getCell(row, ci + 2);
+          const col = colLetter(ci);
+          const formula = cfg.formula(col, ci);
+
+          if (formula) {
+            cell.value = { formula } as any;
+          } else {
+            const yrRatios = ratios[yr] ?? {};
+            const val = yrRatios[cfg.name] ?? "-";
+            const valStr = String(val);
+            if (valStr.endsWith("%")) {
+              const n = parseFloat(valStr.replace(/%|,/g, ""));
+              if (!isNaN(n)) { cell.value = n; } else { cell.value = val; }
+            } else if (valStr.endsWith("배")) {
+              const n = parseFloat(valStr.replace(/배|,/g, ""));
+              if (!isNaN(n)) { cell.value = n; } else { cell.value = val; }
+            } else {
+              const n = parseFloat(valStr.replace(/,/g, ""));
+              if (!isNaN(n)) { cell.value = n; } else { cell.value = val; }
+            }
+          }
+          cell.numFmt = cfg.fmt;
+          cell.font = NORMAL_FONT;
+          cell.alignment = RIGHT_ALIGN;
+          cell.border = THIN_BORDER;
+          cell.fill = RATIO_FILL;
+        }
+        row += 1;
+      }
+    } else if (ratios) {
+      // CF 등 기타 — 서버 계산값 그대로
+      const ratioNames = Object.keys(Object.values(ratios)[0] || {});
+      for (const rName of ratioNames) {
+        ws.getCell(row, 1).value = rName;
+        ws.getCell(row, 1).font = { name: FONT_NAME, size: FONT_SIZE, bold: true };
+        ws.getCell(row, 1).border = THIN_BORDER;
+        ws.getCell(row, 1).fill = RATIO_FILL;
+        for (let ci = 0; ci < years.length; ci++) {
+          const yr = years[ci];
+          const cell = ws.getCell(row, ci + 2);
+          cell.value = (ratios[yr] ?? {})[rName] ?? "-";
+          cell.font = NORMAL_FONT; cell.alignment = RIGHT_ALIGN;
+          cell.border = THIN_BORDER; cell.fill = RATIO_FILL;
         }
         row += 1;
       }
@@ -1517,7 +1611,13 @@ export async function generateExcelReport(
     );
   }
 
-  // 4-5. Consolidated (if available)
+  // CF Individual (if available)
+  if (data.hasOfs && data.cfItemsOfs && data.cfItemsOfs.length > 0) {
+    tabNum += 1;
+    createFinancialSheet(wb, data, `${tabNum}.현금흐름표(개별)`, "CF", "OFS");
+  }
+
+  // Consolidated (if available)
   if (data.hasCfs) {
     tabNum += 1;
     createFinancialSheet(
@@ -1535,6 +1635,10 @@ export async function generateExcelReport(
       "IS",
       "CFS"
     );
+    if (data.cfItemsCfs && data.cfItemsCfs.length > 0) {
+      tabNum += 1;
+      createFinancialSheet(wb, data, `${tabNum}.현금흐름표(연결)`, "CF", "CFS");
+    }
   }
 
   // 6. Financial analysis
@@ -1638,35 +1742,6 @@ export async function generateExcelReport(
   if (yoySheetName && yoyRowMap && yoyRowMap.size > 0) {
     applyYoYHyperlinks(wb, data, yoySheetName, yoyRowMap);
   }
-
-  // Placeholder sheets for collateral analysis
-  tabNum += 1;
-  createPlaceholderSheet(
-    wb,
-    `${tabNum}.담보물조사`,
-    "■ 담보물 조사"
-  );
-
-  tabNum += 1;
-  createPlaceholderSheet(
-    wb,
-    `${tabNum}.낙찰률통계`,
-    "■ 지역·용도별 낙찰통계"
-  );
-
-  tabNum += 1;
-  createPlaceholderSheet(
-    wb,
-    `${tabNum}.담보물사진`,
-    "■ 위치도 및 현장사진"
-  );
-
-  tabNum += 1;
-  createPlaceholderSheet(
-    wb,
-    `${tabNum}.비준사례`,
-    "■ 비준사례"
-  );
 
   // Write to buffer
   const arrayBuffer = await wb.xlsx.writeBuffer();
