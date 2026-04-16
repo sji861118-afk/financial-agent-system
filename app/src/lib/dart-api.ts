@@ -552,10 +552,10 @@ function buildStatements(
 
     for (const [field, dataYear] of Object.entries(periodMap)) {
       if (!displayYears.includes(dataYear)) continue;
-      // 당기(thstrm) 데이터가 가장 정확 → 기존 전기/전전기 데이터 덮어쓰기 허용
-      // 전기/전전기 데이터는 이미 당기 데이터가 있으면 건너뜀
-      const isCurrentYear = field.startsWith("thstrm");
-      if (yearData[dataYear] && !isCurrentYear) continue;
+      // 최신 보고서 우선: 기업은 정정공시를 통해 최신 보고서에 수정 수치를 반영하므로,
+      // 가장 최근 보고서(reverse sort로 먼저 처리됨)의 데이터가 가장 정확.
+      // 이미 최신 보고서에서 해당 연도 데이터가 채워졌으면 이전 보고서 데이터로 덮어쓰지 않음.
+      if (yearData[dataYear]) continue;
 
       const vals: Record<string, string> = {};
       for (const it of items) {

@@ -2,6 +2,7 @@ import { type NextRequest } from "next/server";
 import { findCorpCode, findStockCodeByCorpCode } from "@/lib/dart-corp-codes";
 import { buildFinancialData, fetchAuditOpinion, fetchShareholders, fetchBorrowingNotes, fetchAuditNotes, type FinancialResult } from "@/lib/dart-api";
 import { analyzeYoYChanges, type YoYThreshold, type YoYChangeItem } from "@/lib/yoy-note-analyzer";
+import { auditFinancialData, type AuditReport } from "@/lib/financial-auditor";
 import { fetchFisisFinancialData, convertFisisToFinancialRows } from "@/lib/fisis-api";
 import { analyzeFinancial } from "@/lib/financial-analyzer";
 import { generateRuleBasedExpert } from "@/lib/rule-based-expert";
@@ -346,6 +347,18 @@ export async function POST(request: NextRequest) {
     const qaReport = null;
     const qaEscalations = null;
 
+    // 회계 감수 에이전트: 재무제표 정합성 검증
+    let auditReport: AuditReport | null = null;
+    try {
+      auditReport = auditFinancialData(result);
+      console.log(`[Audit] ${auditReport.summary}`);
+      if (!auditReport.passed) {
+        console.warn("[Audit] 검증 실패:", auditReport.findings.filter(f => f.severity === "ERROR").map(f => f.message));
+      }
+    } catch (e) {
+      console.warn("[Audit] 감수 실행 실패:", e);
+    }
+
     // 응답 조립
     const responseAnalysis = analysis
       ? {
@@ -399,6 +412,12 @@ export async function POST(request: NextRequest) {
         // QA 검수 결과 (에이전트 시스템)
         qaReport,
         qaEscalations,
+        // 회계 감수 에이전트 결과
+        auditReport: auditReport ? {
+          passed: auditReport.passed,
+          summary: auditReport.summary,
+          findings: auditReport.findings,
+        } : undefined,
       },
     });
   } catch (error: unknown) {

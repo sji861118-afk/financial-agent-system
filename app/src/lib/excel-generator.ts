@@ -790,81 +790,10 @@ function createFinancialSheet(
       return String.fromCharCode(65 + ci + 1); // 0→B, 1→C, ...
     }
 
-    if (ratios && stmtType === "BS") {
-      // BS 비율: 총차입금, 순차입금, 부채비율, 유동비율, 자기자본비율, 차입금의존도
-      const bsRatioConfig: { name: string; formula: (col: string) => string | null; fmt: string }[] = [];
-      const rDebt = findRow("부채총계");
-      const rEquity = findRow("자본총계");
-      const rAssets = findRow("자산총계");
-      const rCash = findRow("현금및현금성자산", "현금및예치금", "현금");
-      const rBorr = findRow("차입부채", "단기차입금");
-
-      bsRatioConfig.push(
-        { name: "총차입금", formula: () => null, fmt: "#,##0" }, // 서버 계산값 사용 (복잡한 합산)
-        { name: "순차입금", formula: () => null, fmt: "#,##0" },
-        { name: "부채비율", formula: (c) => rDebt && rEquity ? `=${c}${rDebt}/${c}${rEquity}*100` : null, fmt: '0.0"%"' },
-        { name: "유동비율", formula: () => null, fmt: '0.0"%"' }, // 유동자산/유동부채 — 보험업 등 유동 구분 없을 수 있음
-        { name: "자기자본비율", formula: (c) => rEquity && rAssets ? `=${c}${rEquity}/${c}${rAssets}*100` : null, fmt: '0.0"%"' },
-        { name: "차입금의존도", formula: () => null, fmt: '0.0"%"' },
-      );
-
-      for (const cfg of bsRatioConfig) {
-        ws.getCell(row, 1).value = cfg.name;
-        ws.getCell(row, 1).font = { name: FONT_NAME, size: FONT_SIZE, bold: true };
-        ws.getCell(row, 1).border = THIN_BORDER;
-        ws.getCell(row, 1).fill = RATIO_FILL;
-
-        for (let ci = 0; ci < years.length; ci++) {
-          const yr = years[ci];
-          const cell = ws.getCell(row, ci + 2);
-          const col = colLetter(ci);
-          const formula = cfg.formula(col);
-
-          if (formula) {
-            cell.value = { formula } as any;
-          } else {
-            // 서버 계산값 사용
-            const yrRatios = ratios[yr] ?? {};
-            const val = yrRatios[cfg.name] ?? "-";
-            const valStr = String(val);
-            if (valStr.endsWith("%")) {
-              const n = parseFloat(valStr.replace(/%|,/g, ""));
-              if (!isNaN(n)) { cell.value = n; } else { cell.value = val; }
-            } else {
-              const n = parseFloat(valStr.replace(/,/g, ""));
-              if (!isNaN(n)) { cell.value = n; } else { cell.value = val; }
-            }
-          }
-          cell.numFmt = cfg.fmt;
-          cell.font = NORMAL_FONT;
-          cell.alignment = RIGHT_ALIGN;
-          cell.border = THIN_BORDER;
-          cell.fill = RATIO_FILL;
-        }
-        row += 1;
-      }
-    } else if (ratios && stmtType === "IS") {
-      // IS 비율: 영업이익률, ROA, ROE, EBITDA, EBITDA/이자비용, 이자보상배율, 매출증가율
-      const rRevenue = findRow("영업수익", "매출액", "공사수익", "보험수익");
-      const rOpIncome = findRow("영업이익", "영업이익(손실)", "영업손익");
-      const rNI = findRow("당기순이익", "당기순이익(손실)", "당기순손익");
-      const rFinCost = findRow("금융비용", "이자비용", "금융원가");
-
-      const isRatioConfig: { name: string; formula: (col: string, ci: number) => string | null; fmt: string }[] = [
-        { name: "영업이익률", formula: (c) => rOpIncome && rRevenue ? `=${c}${rOpIncome}/${c}${rRevenue}*100` : null, fmt: '0.0"%"' },
-        { name: "총자산이익률(ROA)", formula: () => null, fmt: '0.0"%"' },
-        { name: "자기자본이익률(ROE)", formula: () => null, fmt: '0.0"%"' },
-        { name: "EBITDA", formula: () => null, fmt: "#,##0" }, // CF에서 감가상각비 참조해야 → 서버값
-        { name: "EBITDA/이자비용", formula: () => null, fmt: "0.0" },
-        { name: "이자보상배율", formula: (c) => rOpIncome && rFinCost ? `=${c}${rOpIncome}/ABS(${c}${rFinCost})` : null, fmt: '0.0"배"' },
-        { name: "매출증가율", formula: (c, ci) => {
-          if (ci === 0 || !rRevenue) return null;
-          const prevCol = colLetter(ci - 1);
-          return `=(${c}${rRevenue}-${prevCol}${rRevenue})/ABS(${prevCol}${rRevenue})*100`;
-        }, fmt: '0.0"%"' },
-      ];
-
-      for (const cfg of isRatioConfig) {
+    // 비율 행 렌더링 공통 함수
+    type RatioCfg = { name: string; formula: (col: string, ci: number) => string | null; fmt: string; desc: string };
+    function renderRatioRows(configs: RatioCfg[]) {
+      for (const cfg of configs) {
         ws.getCell(row, 1).value = cfg.name;
         ws.getCell(row, 1).font = { name: FONT_NAME, size: FONT_SIZE, bold: true };
         ws.getCell(row, 1).border = THIN_BORDER;
@@ -879,19 +808,11 @@ function createFinancialSheet(
           if (formula) {
             cell.value = { formula } as any;
           } else {
-            const yrRatios = ratios[yr] ?? {};
+            const yrRatios = ratios?.[yr] ?? {};
             const val = yrRatios[cfg.name] ?? "-";
             const valStr = String(val);
-            if (valStr.endsWith("%")) {
-              const n = parseFloat(valStr.replace(/%|,/g, ""));
-              if (!isNaN(n)) { cell.value = n; } else { cell.value = val; }
-            } else if (valStr.endsWith("배")) {
-              const n = parseFloat(valStr.replace(/배|,/g, ""));
-              if (!isNaN(n)) { cell.value = n; } else { cell.value = val; }
-            } else {
-              const n = parseFloat(valStr.replace(/,/g, ""));
-              if (!isNaN(n)) { cell.value = n; } else { cell.value = val; }
-            }
+            const n = parseFloat(valStr.replace(/%|배|,/g, ""));
+            cell.value = !isNaN(n) ? n : val;
           }
           cell.numFmt = cfg.fmt;
           cell.font = NORMAL_FONT;
@@ -899,25 +820,132 @@ function createFinancialSheet(
           cell.border = THIN_BORDER;
           cell.fill = RATIO_FILL;
         }
-        row += 1;
-      }
-    } else if (ratios) {
-      // CF 등 기타 — 서버 계산값 그대로
-      const ratioNames = Object.keys(Object.values(ratios)[0] || {});
-      for (const rName of ratioNames) {
-        ws.getCell(row, 1).value = rName;
-        ws.getCell(row, 1).font = { name: FONT_NAME, size: FONT_SIZE, bold: true };
-        ws.getCell(row, 1).border = THIN_BORDER;
-        ws.getCell(row, 1).fill = RATIO_FILL;
-        for (let ci = 0; ci < years.length; ci++) {
-          const yr = years[ci];
-          const cell = ws.getCell(row, ci + 2);
-          cell.value = (ratios[yr] ?? {})[rName] ?? "-";
-          cell.font = NORMAL_FONT; cell.alignment = RIGHT_ALIGN;
-          cell.border = THIN_BORDER; cell.fill = RATIO_FILL;
+        // 증감액/증감률 컬럼도 채우기 (빈칸 방지)
+        for (let extra = years.length + 2; extra <= totalCols; extra++) {
+          const ec = ws.getCell(row, extra);
+          if (!ec.value) { ec.value = ""; ec.border = THIN_BORDER; ec.fill = RATIO_FILL; }
         }
         row += 1;
       }
+    }
+
+    if (ratios && stmtType === "BS") {
+      const rDebt = findRow("부채총계");
+      const rEquity = findRow("자본총계");
+      const rAssets = findRow("자산총계");
+      const rCash = findRow("현금및현금성자산", "현금및예치금", "현금");
+      const rCurAsset = findRow("유동자산");
+      const rCurLiab = findRow("유동부채");
+      // 차입금 관련 행 수집 (SUM 수식용)
+      const borrowingKeywords = ["단기차입금", "장기차입금", "유동성장기부채", "유동성장기차입금",
+        "사채", "전환사채", "교환사채", "단기사채", "유동성사채",
+        "유동리스부채", "비유동리스부채", "리스부채", "차입부채",
+        "유동금융부채", "비유동금융부채"];
+      const borrowRows: number[] = [];
+      for (const kw of borrowingKeywords) {
+        const r = findRow(kw);
+        if (r) borrowRows.push(r);
+      }
+
+      // 총차입금 행 번호 (순차입금, 차입금의존도에서 참조)
+      let totalBorrRow = 0;
+
+      const bsCfg: RatioCfg[] = [
+        { name: "총차입금", desc: "차입금 관련 계정 합계", fmt: "#,##0",
+          formula: (c) => borrowRows.length > 0 ? `=${borrowRows.map(r => `${c}${r}`).join("+")}` : null },
+        { name: "순차입금", desc: "총차입금 - 현금및현금성자산", fmt: "#,##0",
+          formula: (c) => rCash ? `=${c}${row}-${c}${rCash}` : null }, // row = 총차입금 행 (이 시점)
+        { name: "부채비율", desc: "(부채총계/자본총계)×100", fmt: '0.0"%"',
+          formula: (c) => rDebt && rEquity ? `=IF(${c}${rEquity}=0,"-",${c}${rDebt}/${c}${rEquity}*100)` : null },
+        { name: "유동비율", desc: "(유동자산/유동부채)×100", fmt: '0.0"%"',
+          formula: (c) => rCurAsset && rCurLiab ? `=IF(${c}${rCurLiab}=0,"-",${c}${rCurAsset}/${c}${rCurLiab}*100)` : null },
+        { name: "자기자본비율", desc: "(자본총계/자산총계)×100", fmt: '0.0"%"',
+          formula: (c) => rEquity && rAssets ? `=IF(${c}${rAssets}=0,"-",${c}${rEquity}/${c}${rAssets}*100)` : null },
+        { name: "차입금의존도", desc: "(총차입금/자산총계)×100", fmt: '0.0"%"',
+          formula: () => null }, // 아래에서 totalBorrRow 설정 후 수동
+      ];
+
+      // 총차입금/순차입금 행 번호 미리 계산
+      totalBorrRow = row; // 총차입금이 첫 번째 비율 행
+      // 순차입금의 formula에서 총차입금 행 참조 수정
+      bsCfg[1].formula = (c) => rCash ? `=${c}${totalBorrRow}-${c}${rCash}` : null;
+      // 차입금의존도: 총차입금행/자산총계행*100
+      bsCfg[5].formula = (c) => rAssets ? `=IF(${c}${rAssets}=0,"-",${c}${totalBorrRow}/${c}${rAssets}*100)` : null;
+
+      renderRatioRows(bsCfg);
+
+    } else if (ratios && stmtType === "IS") {
+      const rRevenue = findRow("영업수익", "매출액", "공사수익", "보험수익");
+      const rOpIncome = findRow("영업이익", "영업이익(손실)", "영업손익");
+      const rNI = findRow("당기순이익", "당기순이익(손실)", "당기순손익", "연결당기순이익");
+      const rFinCost = findRow("금융비용", "이자비용", "금융원가");
+
+      // BS 시트 참조 (ROA, ROE용) — 같은 fsDiv의 BS 시트명 찾기
+      const bsSheetName = wb.worksheets.find(s =>
+        s.name.includes("재무상태표") && s.name.includes(fsDiv === "OFS" ? "개별" : "연결")
+      )?.name;
+      const bsRef = bsSheetName ? `'${bsSheetName}'!` : "";
+      // BS 시트에서 자산총계/자본총계 행 찾기 (BS 시트 구조에서 추정)
+      let bsAssetRow = 0, bsEquityRow = 0;
+      if (bsSheetName) {
+        const bsSheet = wb.getWorksheet(bsSheetName);
+        if (bsSheet) {
+          bsSheet.eachRow((r, rn) => {
+            const v = String(r.getCell(1).value || "").replace(/\s/g, "");
+            if (v === "자산총계") bsAssetRow = rn;
+            if (v === "자본총계") bsEquityRow = rn;
+          });
+        }
+      }
+
+      // CF 시트 참조 (EBITDA용) — 같은 fsDiv의 CF 시트명 찾기
+      const cfSheetName = wb.worksheets.find(s =>
+        s.name.includes("현금흐름표") && s.name.includes(fsDiv === "OFS" ? "개별" : "연결")
+      )?.name;
+      let cfDeprRow = 0, cfAmortRow = 0;
+      if (cfSheetName) {
+        const cfSheet = wb.getWorksheet(cfSheetName);
+        if (cfSheet) {
+          cfSheet.eachRow((r, rn) => {
+            const v = String(r.getCell(1).value || "").replace(/\s/g, "");
+            if (!cfDeprRow && (v.includes("감가상각비") || v.includes("유형자산감가상각비"))) cfDeprRow = rn;
+            if (!cfAmortRow && (v.includes("무형자산상각비") || v.includes("사용권자산상각비"))) cfAmortRow = rn;
+          });
+        }
+      }
+      const cfRef = cfSheetName ? `'${cfSheetName}'!` : "";
+
+      // EBITDA 행 번호 (EBITDA/이자비용에서 참조)
+      const ebitdaRowNum = row + 3; // 영업이익률(0), ROA(1), ROE(2), EBITDA(3)
+
+      const isCfg: RatioCfg[] = [
+        { name: "영업이익률", desc: "(영업이익/매출)×100", fmt: '0.0"%"',
+          formula: (c) => rOpIncome && rRevenue ? `=IF(${c}${rRevenue}=0,"-",${c}${rOpIncome}/${c}${rRevenue}*100)` : null },
+        { name: "총자산이익률(ROA)", desc: "(당기순이익/자산총계)×100", fmt: '0.0"%"',
+          formula: (c) => rNI && bsAssetRow ? `=IF(${bsRef}${c}${bsAssetRow}=0,"-",${c}${rNI}/${bsRef}${c}${bsAssetRow}*100)` : null },
+        { name: "자기자본이익률(ROE)", desc: "(당기순이익/자본총계)×100", fmt: '0.0"%"',
+          formula: (c) => rNI && bsEquityRow ? `=IF(${bsRef}${c}${bsEquityRow}=0,"-",${c}${rNI}/${bsRef}${c}${bsEquityRow}*100)` : null },
+        { name: "EBITDA", desc: "영업이익+감가상각비+무형자산상각비", fmt: "#,##0",
+          formula: (c) => {
+            if (!rOpIncome) return null;
+            let f = `=${c}${rOpIncome}`;
+            if (cfDeprRow) f += `+ABS(${cfRef}${c}${cfDeprRow})`;
+            if (cfAmortRow) f += `+ABS(${cfRef}${c}${cfAmortRow})`;
+            return f;
+          }},
+        { name: "EBITDA/이자비용", desc: "EBITDA/|금융비용|", fmt: '0.0"배"',
+          formula: (c) => rFinCost ? `=IF(${c}${rFinCost}=0,"-",${c}${ebitdaRowNum}/ABS(${c}${rFinCost}))` : null },
+        { name: "이자보상배율", desc: "영업이익/|금융비용|", fmt: '0.0"배"',
+          formula: (c) => rOpIncome && rFinCost ? `=IF(${c}${rFinCost}=0,"-",${c}${rOpIncome}/ABS(${c}${rFinCost}))` : null },
+        { name: "매출증가율", desc: "((당기-전기)/|전기|)×100", fmt: '0.0"%"',
+          formula: (c, ci) => {
+            if (ci === 0 || !rRevenue) return null;
+            const pc = colLetter(ci - 1);
+            return `=IF(${pc}${rRevenue}=0,"-",(${c}${rRevenue}-${pc}${rRevenue})/ABS(${pc}${rRevenue})*100)`;
+          }},
+      ];
+
+      renderRatioRows(isCfg);
     }
 
     // Formula reference notes
