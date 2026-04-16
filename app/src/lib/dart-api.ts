@@ -92,7 +92,7 @@ async function fetchFinancialItems(
     });
     const url = `${DART_API_BASE}/fnlttSinglAcntAll.json?${params}`;
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+      const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
       const d = await res.json();
       if (d.status === "000" && d.list?.length) {
         if (reprt !== "11011") {
@@ -153,6 +153,21 @@ function normalizeAcct(s: string): string {
   n = n.replace(/\(주석?[\d,\s]*\)/g, "");
   n = n.replace(/\(Note\s*[\d,\s]*\)/gi, "");
   n = n.replace(/\(注[\d,\s]*\)/g, "");
+  return n;
+}
+
+/**
+ * 계정명 매칭용 정규화 — 연도간 표기 변경 흡수
+ * "영업이익(손실)" → "영업이익", "당기순이익(손실)" → "당기순이익",
+ * "연결당기순이익" → "당기순이익", "연결총포괄손익" → "총포괄손익"
+ */
+function normalizeForMatch(s: string): string {
+  let n = s.trim();
+  // (손실), (이익) 접미사 제거
+  n = n.replace(/\(손실\)$/g, "");
+  n = n.replace(/\(이익\)$/g, "");
+  // "연결" 접두사 제거 (연결당기순이익 → 당기순이익)
+  n = n.replace(/^연결/, "");
   return n;
 }
 
@@ -552,7 +567,12 @@ function buildStatements(
           const fallbackField = field.replace("_add_amount", "_amount");
           amt = (it as unknown as Record<string, string>)[fallbackField] || "";
         }
-        if (nm && amt) vals[nm] = amt;
+        if (nm && amt) {
+          vals[nm] = amt;
+          // 정규화 키도 저장 (연도간 계정명 변경 흡수: "영업이익(손실)"→"영업이익")
+          const matchKey = normalizeForMatch(nm);
+          if (matchKey !== nm && !vals[matchKey]) vals[matchKey] = amt;
+        }
       }
       if (Object.keys(vals).length) yearData[dataYear] = vals;
     }
@@ -668,9 +688,12 @@ function buildStatements(
   const rows: FinancialRow[] = [];
   for (const { nm: acct, depth } of accountOrder) {
     const row: FinancialRow = { account: acct, depth };
+    const matchKey = normalizeForMatch(acct);
     for (const year of displayYears) {
       const vals = yearData[year] || {};
-      row[year] = vals[acct] ? toMillions(vals[acct]) : "-";
+      // 원본 키 → 정규화 키 fallback (연도간 계정명 변경 흡수)
+      const amt = vals[acct] || vals[matchKey];
+      row[year] = amt ? toMillions(amt) : "-";
     }
     if (displayYears.some((y) => row[y] !== "-")) {
       rows.push(row);
@@ -1684,47 +1707,66 @@ export async function buildFinancialData(
     console.log(`[DART] 비상장 법인 감지 (${companyInfo.corpName || corpCode}) → Stage 1 시도 후 실패 시 Stage 3 fallback`);
   }
 
-  // ── 1단계: 전체재무제표 API (fnlttSinglAcntAll) — OFS + CFS 동시 조회 ──
+  // ── 1단계: 전체재무제표 API (fnlttSinglAcntAll) — OFS + CFS 완전 병렬 조회 ──
+  // 기존: OFS→CFS 순차 (Vercel US→DART KR 레이턴시로 CFS 타임아웃 빈발)
+  // 개선: OFS 3년 + CFS 3년 = 6개 호출을 한 번에 병렬 실행
   let gotFull = false;
 
-  for (const [fsLabel, fsDiv] of [["개별", "OFS"], ["연결", "CFS"]] as const) {
-    const rawByYear: Record<string, DartRawItem[]> = {};
-    let hasData = false;
-
-    const quarterlyWarnings: string[] = [];
-    const yearReprtMap: Record<string, string> = {}; // year → reprtCode
-
-    // 연도별 API 호출을 병렬 실행 (Vercel US→DART KR 레이턴시 최소화)
-    // Promise.allSettled: 한 연도 실패해도 나머지 결과 유지
-    const settled = await Promise.allSettled(
-      years.map(async (year) => {
-        const { items: raw, reprtCode } = await fetchFinancialItems(corpCode, year, fsDiv);
-        return { year, raw, reprtCode };
-      })
-    );
-    const yearResults: { year: string; raw: DartRawItem[]; reprtCode: string }[] = [];
-    for (let i = 0; i < settled.length; i++) {
-      if (settled[i].status === "fulfilled") {
-        yearResults.push((settled[i] as PromiseFulfilledResult<{ year: string; raw: DartRawItem[]; reprtCode: string }>).value);
-      } else {
-        console.error(`[DART] ${years[i]}년 ${fsLabel} 조회 실패:`, (settled[i] as PromiseRejectedResult).reason);
-        yearResults.push({ year: years[i], raw: [], reprtCode: "" });
-      }
-    }
-    for (const { year, raw, reprtCode } of yearResults) {
-      rawByYear[year] = raw;
-      if (raw.length) {
-        hasData = true;
-        yearReprtMap[year] = reprtCode;
-        console.log(`[DART] ${year}년 ${fsLabel} → ${raw.length}개 항목 (${REPRT_LABELS[reprtCode] || reprtCode})`);
-        if (reprtCode && reprtCode !== "11011") {
-          const month = REPRT_MONTH[reprtCode] || "12";
-          quarterlyWarnings.push(`${year}년: ${REPRT_LABELS[reprtCode]} 기준 (${year}.${month}월, 사업보고서 미공시 — IS는 누적이 아닌 분기 데이터일 수 있음)`);
+  function renameYearKeys(rows: any[], oldYears: string[], newYears: string[]) {
+    for (const row of rows) {
+      for (let i = 0; i < oldYears.length; i++) {
+        if (oldYears[i] !== newYears[i] && row[oldYears[i]] !== undefined) {
+          row[newYears[i]] = row[oldYears[i]];
+          delete row[oldYears[i]];
         }
       }
     }
+  }
 
-    if (!hasData) continue;
+  // OFS + CFS 모든 연도를 한 번에 병렬 호출
+  const allFetches: Promise<{ fsDiv: string; year: string; raw: DartRawItem[]; reprtCode: string }>[] = [];
+  for (const fsDiv of ["OFS", "CFS"] as const) {
+    for (const year of years) {
+      allFetches.push(
+        fetchFinancialItems(corpCode, year, fsDiv)
+          .then(({ items, reprtCode }) => ({ fsDiv, year, raw: items, reprtCode }))
+          .catch((e) => {
+            console.error(`[DART] ${year}년 ${fsDiv} 조회 실패:`, e instanceof Error ? e.message : e);
+            return { fsDiv, year, raw: [] as DartRawItem[], reprtCode: "" };
+          })
+      );
+    }
+  }
+  const allResults = await Promise.all(allFetches);
+
+  // OFS/CFS 별로 결과 분류 및 처리
+  for (const [fsLabel, fsDiv] of [["개별", "OFS"], ["연결", "CFS"]] as const) {
+    const rawByYear: Record<string, DartRawItem[]> = {};
+    let hasData = false;
+    const quarterlyWarnings: string[] = [];
+    const yearReprtMap: Record<string, string> = {};
+
+    for (const r of allResults.filter(r => r.fsDiv === fsDiv)) {
+      rawByYear[r.year] = r.raw;
+      if (r.raw.length) {
+        hasData = true;
+        yearReprtMap[r.year] = r.reprtCode;
+        console.log(`[DART] ${r.year}년 ${fsLabel} → ${r.raw.length}개 항목 (${REPRT_LABELS[r.reprtCode] || r.reprtCode})`);
+        if (r.reprtCode && r.reprtCode !== "11011") {
+          const month = REPRT_MONTH[r.reprtCode] || "12";
+          quarterlyWarnings.push(`${r.year}년: ${REPRT_LABELS[r.reprtCode]} 기준 (${r.year}.${month}월, 사업보고서 미공시 — IS는 누적이 아닌 분기 데이터일 수 있음)`);
+        }
+      }
+    }
+    // 데이터 없는 연도도 빈 배열로 채움
+    for (const y of years) {
+      if (!rawByYear[y]) rawByYear[y] = [];
+    }
+
+    if (!hasData) {
+      console.log(`[DART] ${fsLabel} 재무제표 데이터 없음 → 스킵`);
+      continue;
+    }
     gotFull = true;
 
     const { bsRows, isRows, cfRows, ratios } = processRawStatements(rawByYear, years, yearReprtMap);
@@ -1738,17 +1780,6 @@ export async function buildFinancialData(
       return y;
     });
 
-    // BS/IS 항목의 연도 키도 변경
-    function renameYearKeys(rows: any[], oldYears: string[], newYears: string[]) {
-      for (const row of rows) {
-        for (let i = 0; i < oldYears.length; i++) {
-          if (oldYears[i] !== newYears[i] && row[oldYears[i]] !== undefined) {
-            row[newYears[i]] = row[oldYears[i]];
-            delete row[oldYears[i]];
-          }
-        }
-      }
-    }
     renameYearKeys(bsRows, years, displayYears);
     renameYearKeys(isRows, years, displayYears);
     renameYearKeys(cfRows, years, displayYears);
@@ -1828,26 +1859,51 @@ export async function buildFinancialData(
     console.log(`[DART] 주요계정도 없음 → 감사보고서 원문(XML) 파싱 시도 (onlyAudit=${filingInfo.onlyAudit})`);
     const auditResult = await fetchAuditReportData(corpCode, years);
 
+    // 사용자 요청 연도 범위로 감사보고서 dataYears 필터링
+    // 감사보고서는 당기/전기를 모두 추출하므로 요청 범위를 넘어가기 쉬움
+    const minReq = Math.min(...years.map(Number));
+    const maxReq = Math.max(...years.map(Number));
+    function filterYearsToRange(dataYears: string[]): string[] {
+      return dataYears.filter(y => {
+        const n = parseInt(y);
+        return n >= minReq && n <= maxReq;
+      });
+    }
+    function filterRowsToRange(rows: FinancialRow[], filteredYears: string[], allYears: string[]): FinancialRow[] {
+      const removeYears = allYears.filter(y => !filteredYears.includes(y));
+      if (removeYears.length === 0) return rows;
+      return rows.map(r => {
+        const filtered = { ...r };
+        for (const y of removeYears) delete filtered[y];
+        return filtered;
+      });
+    }
+
     // 개별(OFS)
     if (auditResult.ofs) {
-      const ratios = calcRatios(auditResult.ofs.bsRows, auditResult.ofs.isRows, auditResult.ofs.dataYears);
-      result.bsItems = auditResult.ofs.bsRows;
-      result.isItems = auditResult.ofs.isRows;
+      const filteredYears = filterYearsToRange(auditResult.ofs.dataYears);
+      const bsRows = filterRowsToRange(auditResult.ofs.bsRows, filteredYears, auditResult.ofs.dataYears);
+      const isRows = filterRowsToRange(auditResult.ofs.isRows, filteredYears, auditResult.ofs.dataYears);
+      const ratios = calcRatios(bsRows, isRows, filteredYears);
+      result.bsItems = bsRows;
+      result.isItems = isRows;
       result.ratios = ratios;
       result.hasOfs = true;
-      result.years = auditResult.ofs.dataYears;
+      result.years = filteredYears;
       result.hasData = true;
     }
 
     // 연결(CFS)
     if (auditResult.cfs) {
-      const ratios = calcRatios(auditResult.cfs.bsRows, auditResult.cfs.isRows, auditResult.cfs.dataYears);
-      result.bsItemsCfs = auditResult.cfs.bsRows;
-      result.isItemsCfs = auditResult.cfs.isRows;
+      const filteredYears = filterYearsToRange(auditResult.cfs.dataYears);
+      const bsRows = filterRowsToRange(auditResult.cfs.bsRows, filteredYears, auditResult.cfs.dataYears);
+      const isRows = filterRowsToRange(auditResult.cfs.isRows, filteredYears, auditResult.cfs.dataYears);
+      const ratios = calcRatios(bsRows, isRows, filteredYears);
+      result.bsItemsCfs = bsRows;
+      result.isItemsCfs = isRows;
       result.ratiosCfs = ratios;
       result.hasCfs = true;
-      // 연결만 있고 개별이 없으면 years를 연결 기준으로
-      if (!result.hasOfs) result.years = auditResult.cfs.dataYears;
+      if (!result.hasOfs) result.years = filteredYears;
       result.hasData = true;
     }
 

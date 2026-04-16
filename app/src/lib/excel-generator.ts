@@ -1317,7 +1317,8 @@ function createYoYAnalysisSheet(
   wb: ExcelJS.Workbook,
   data: ExcelReportData,
   sheetName: string
-) {
+): Map<string, number> {
+  const rowMap = new Map<string, number>(); // "BS|계정명" → row번호
   const ws = wb.addWorksheet(sheetName, {
     views: [{ showGridLines: true }],
   });
@@ -1406,6 +1407,7 @@ function createYoYAnalysisSheet(
 
       const textLen = (item.noteDetail || "").length;
       ws.getRow(row).height = Math.max(20, Math.min(80, Math.ceil(textLen / 60) * 15));
+      rowMap.set(`${item.stmtType}|${item.account}`, row);
       row += 1;
     }
     row += 1;
@@ -1425,6 +1427,57 @@ function createYoYAnalysisSheet(
 
   ws.getCell(row, 1).value = "※ DART 감사보고서 주석에서 자동 추출";
   ws.getCell(row, 1).font = { name: FONT_NAME, size: 9, italic: true, color: { argb: "FF888888" } };
+
+  return rowMap;
+}
+
+/** 재무제표 시트의 증감사유 셀에 증감사유분석 시트로의 하이퍼링크 적용 */
+function applyYoYHyperlinks(
+  wb: ExcelJS.Workbook,
+  data: ExcelReportData,
+  yoySheetName: string,
+  rowMap: Map<string, number>
+) {
+  if (!data.yoyAnalysis || data.yoyAnalysis.length === 0) return;
+  const years = [...(data.years || [])].sort();
+  const noteCol = years.length + 4; // 증감사유 컬럼 위치
+
+  // 모든 재무제표 시트 순회
+  for (const ws of wb.worksheets) {
+    const wsName = ws.name;
+    // 재무상태표/손익계산서 시트만 대상
+    let stmtType: "BS" | "IS" | null = null;
+    if (wsName.includes("재무상태표")) stmtType = "BS";
+    else if (wsName.includes("손익계산서")) stmtType = "IS";
+    if (!stmtType) continue;
+
+    ws.eachRow((row, rowNum) => {
+      const noteCell = row.getCell(noteCol);
+      if (!noteCell.value || typeof noteCell.value !== "string") return;
+      const val = noteCell.value as string;
+      if (!val.startsWith("→ 주석")) return;
+
+      // 이 행의 계정명 추출
+      const acctCell = row.getCell(1);
+      const acctRaw = String(acctCell.value || "").trim();
+
+      // rowMap에서 해당 항목 찾기
+      const key = `${stmtType}|${acctRaw}`;
+      const targetRow = rowMap.get(key);
+      if (!targetRow) return;
+
+      // 하이퍼링크 설정
+      noteCell.value = {
+        text: val,
+        hyperlink: `#'${yoySheetName}'!A${targetRow}`,
+      } as ExcelJS.CellHyperlinkValue;
+      noteCell.font = {
+        name: FONT_NAME, size: 9,
+        color: { argb: "FF4472C4" },
+        underline: true,
+      };
+    });
+  }
 }
 
 /**
@@ -1573,9 +1626,17 @@ export async function generateExcelReport(
   }
 
   // 증감사유분석 시트 (yoyAnalysis 데이터 있을 때)
+  let yoySheetName: string | undefined;
+  let yoyRowMap: Map<string, number> | undefined;
   if (data.yoyAnalysis && data.yoyAnalysis.length > 0) {
     tabNum += 1;
-    createYoYAnalysisSheet(wb, data, `${tabNum}.증감사유분석`);
+    yoySheetName = `${tabNum}.증감사유분석`;
+    yoyRowMap = createYoYAnalysisSheet(wb, data, yoySheetName);
+  }
+
+  // 재무제표 시트에 증감사유 하이퍼링크 후처리 적용
+  if (yoySheetName && yoyRowMap && yoyRowMap.size > 0) {
+    applyYoYHyperlinks(wb, data, yoySheetName, yoyRowMap);
   }
 
   // Placeholder sheets for collateral analysis
