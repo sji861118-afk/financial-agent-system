@@ -133,6 +133,15 @@ function isExcludedAccount(accountNm: string): boolean {
   return EXCLUDED_ACCOUNTS.some((ex) => nm === ex || nm.includes("주당이익") || nm.includes("주당손실") || nm.includes("주당순이익") || nm.includes("주당순손실"));
 }
 
+/** 계정명에서 주석번호 추출: "(주석5,6)" → "5,6", "(주12,18)" → "12,18" */
+function extractNoteRef(s: string): string | undefined {
+  const m = s.match(/\(주석?([\d,\s]+)\)/);
+  if (m) return m[1].replace(/\s/g, "");
+  const m2 = s.match(/\(Note\s*([\d,\s]+)\)/i);
+  if (m2) return m2[1].replace(/\s/g, "");
+  return undefined;
+}
+
 function normalizeAcct(s: string): string {
   let n = s.replace(/\s/g, "");
   // 로마숫자/숫자 접두사 제거: Ⅰ.유동자산 → 유동자산
@@ -160,6 +169,7 @@ function parseNum(s: string): number {
 export interface FinancialRow {
   account: string;
   depth?: number; // 0=총계, 1=중분류, 2=세부항목
+  noteRef?: string; // 감사보고서 주석번호 (예: "5", "12,18")
   [year: string]: string | number | undefined;
 }
 
@@ -181,6 +191,8 @@ export interface FinancialResult {
   source: string;
   hasData: boolean;
   noDataReason?: string;
+  // 감사보고서 주석 섹션 (번호 → 텍스트)
+  notesSections?: Record<string, string>;
 }
 
 // ── 계정과목 계층 depth 추론 (전 산업 범용) ──
@@ -1166,7 +1178,7 @@ function parseAuditNum(s: string): number {
 async function parseOneAuditXml(
   rceptNo: string,
   targetYear: string
-): Promise<{ bsRows: FinancialRow[]; isRows: FinancialRow[]; years: string[] } | null> {
+): Promise<{ bsRows: FinancialRow[]; isRows: FinancialRow[]; years: string[]; notesSections?: Record<string, string> } | null> {
   const apiKey = getApiKey();
   try {
     const params = new URLSearchParams({ crtfc_key: apiKey, rcept_no: rceptNo });
@@ -1318,9 +1330,10 @@ async function parseOneAuditXml(
       const typicalCols = detectTypicalCols(items);
       const rows: FinancialRow[] = [];
       for (const [acct, nums] of items) {
+        const noteRef = extractNoteRef(acct);
         const acctClean = normalizeAcct(acct);
         if (isExcludedAccount(acctClean)) continue;
-        const row: FinancialRow = { account: acctClean, depth: detectAccountDepth(acctClean, ["BS", "IS", "CIS"]) };
+        const row: FinancialRow = { account: acctClean, depth: detectAccountDepth(acctClean, ["BS", "IS", "CIS"]), noteRef };
         let v1: string, v2: string; // v1=첫째 컬럼, v2=둘째 컬럼
 
         if (typicalCols >= 4 && nums.length >= 4) {
@@ -1349,15 +1362,75 @@ async function parseOneAuditXml(
       return rows;
     }
 
+    // 감사보고서 주석 섹션 추출 (이미 메모리에 있는 content 사용)
+    const notesSections = extractNoteSections(content);
+
     return {
       bsRows: extractTwoYears(bsItems, targetYear, prevYear, columnOrderReversed),
       isRows: extractTwoYears(isItems, targetYear, prevYear, columnOrderReversed),
       years: [targetYear, prevYear],
+      notesSections: Object.keys(notesSections).length > 0 ? notesSections : undefined,
     };
   } catch (e) {
     console.error(`[DART] ${targetYear}년 감사보고서 파싱 실패:`, e);
     return null;
   }
+}
+
+/**
+ * 감사보고서 HTML 내 주석 섹션을 번호별로 추출
+ * "5. 유형자산" → { "5": "유형자산\n내역 텍스트..." }
+ */
+function extractNoteSections(htmlContent: string): Record<string, string> {
+  const notes: Record<string, string> = {};
+
+  // HTML 태그 제거 + 텍스트만 추출
+  const text = htmlContent
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?(p|div|tr|td|th|table|tbody|thead)[^>]*>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#\d+;/g, "")
+    .replace(/\r\n/g, "\n");
+
+  // "별첨 주석" 또는 "재무제표에 대한 주석" 이후만 파싱
+  const noteStart = text.search(/별첨\s*-?\s*주석|재무제표에\s*대한\s*주석|주석\s*사항/);
+  if (noteStart < 0) return notes;
+  const noteText = text.slice(noteStart);
+
+  // 번호별 섹션 분리: "1.", "2.", ... "45." 등
+  // 패턴: 줄 시작 또는 공백 후 "번호." + 제목 (한글 2자 이상)
+  const sectionRegex = /(?:^|\n)\s*(\d{1,3})\.\s*([가-힣a-zA-Z].{1,60})/g;
+  const sections: { num: string; title: string; startIdx: number }[] = [];
+  let match;
+  while ((match = sectionRegex.exec(noteText)) !== null) {
+    sections.push({
+      num: match[1],
+      title: match[2].trim(),
+      startIdx: match.index,
+    });
+  }
+
+  // 각 섹션의 텍스트를 다음 섹션 시작까지 추출
+  for (let i = 0; i < sections.length; i++) {
+    const sec = sections[i];
+    const endIdx = i + 1 < sections.length ? sections[i + 1].startIdx : noteText.length;
+    let body = noteText.slice(sec.startIdx, endIdx).trim();
+
+    // 공백 정규화
+    body = body.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
+
+    // 최대 2000자로 truncate
+    if (body.length > 2000) body = body.slice(0, 2000) + "...";
+
+    notes[sec.num] = body;
+  }
+
+  return notes;
 }
 
 // 연도별 파싱 결과 병합
@@ -1411,6 +1484,7 @@ function mergeAuditResults(
 interface AuditReportResult {
   ofs: { bsRows: FinancialRow[]; isRows: FinancialRow[]; dataYears: string[] } | null;
   cfs: { bsRows: FinancialRow[]; isRows: FinancialRow[]; dataYears: string[] } | null;
+  notesSections?: Record<string, string>;
 }
 
 async function fetchAuditReportData(
@@ -1513,9 +1587,22 @@ async function fetchAuditReportData(
       : Promise.resolve([] as (Awaited<ReturnType<typeof parseOneAuditXml>>)[]),
   ]);
 
+  // 주석 섹션 병합 (최신 연도 우선)
+  const mergedNotes: Record<string, string> = {};
+
   if (ofsEntries.length) {
     const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], dataYears: [] as string[] };
-    for (const parsed of ofsEntries) { if (parsed) mergeAuditResults(acc, parsed); }
+    for (const parsed of ofsEntries) {
+      if (parsed) {
+        mergeAuditResults(acc, parsed);
+        // 주석 병합 (최신 연도가 먼저 처리되므로 기존 키 보존)
+        if (parsed.notesSections) {
+          for (const [k, v] of Object.entries(parsed.notesSections)) {
+            if (!mergedNotes[k]) mergedNotes[k] = v;
+          }
+        }
+      }
+    }
     if (acc.bsRows.length || acc.isRows.length) {
       acc.dataYears = [...new Set(acc.dataYears)].sort();
       ofsResult = acc;
@@ -1523,14 +1610,27 @@ async function fetchAuditReportData(
   }
   if (cfsEntries.length) {
     const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], dataYears: [] as string[] };
-    for (const parsed of cfsEntries) { if (parsed) mergeAuditResults(acc, parsed); }
+    for (const parsed of cfsEntries) {
+      if (parsed) {
+        mergeAuditResults(acc, parsed);
+        if (parsed.notesSections) {
+          for (const [k, v] of Object.entries(parsed.notesSections)) {
+            if (!mergedNotes[k]) mergedNotes[k] = v;
+          }
+        }
+      }
+    }
     if (acc.bsRows.length || acc.isRows.length) {
       acc.dataYears = [...new Set(acc.dataYears)].sort();
       cfsResult = acc;
     }
   }
 
-  return { ofs: ofsResult, cfs: cfsResult };
+  return {
+    ofs: ofsResult,
+    cfs: cfsResult,
+    notesSections: Object.keys(mergedNotes).length > 0 ? mergedNotes : undefined,
+  };
 }
 
 // ============================================================
@@ -1751,6 +1851,11 @@ export async function buildFinancialData(
       result.hasData = true;
     }
 
+    // 주석 섹션 전달
+    if (auditResult.notesSections) {
+      result.notesSections = auditResult.notesSections;
+    }
+
     if (result.hasData) {
       result.source = "DART 감사보고서 원문 자동 파싱";
       return result;
@@ -1762,6 +1867,92 @@ export async function buildFinancialData(
     ? "비상장 외감법인 (감사보고서만 제출) - 감사보고서 원문 파싱도 실패. 파일 업로드 탭에서 재무제표를 직접 업로드하세요."
     : "DART에서 재무데이터를 조회할 수 없습니다.";
   return result;
+}
+
+/**
+ * Stage 1(상장사 API) 데이터에 대해 감사보고서에서 주석 섹션만 별도 추출
+ * 임계값이 설정된 경우에만 호출 (opt-in, ZIP 다운로드 5~8초 소요)
+ */
+export async function fetchAuditNotes(
+  corpCode: string,
+  years: string[]
+): Promise<Record<string, string> | null> {
+  const apiKey = getApiKey();
+  try {
+    const minYear = parseInt(years.reduce((a, b) => a < b ? a : b));
+    const params = new URLSearchParams({
+      crtfc_key: apiKey,
+      corp_code: corpCode,
+      bgn_de: `${minYear - 1}0101`,
+      end_de: "20261231",
+      pblntf_ty: "F",
+      page_count: "20",
+    });
+    const res = await fetch(`${DART_API_BASE}/list.json?${params}`);
+    const d = await res.json();
+
+    // 최신 감사보고서 rcept_no 찾기
+    let rceptNo: string | null = null;
+    for (const it of d.list || []) {
+      const nm: string = it.report_nm || "";
+      if (nm.includes("감사보고서") && !nm.includes("제출") && !nm.includes("연결")) {
+        rceptNo = it.rcept_no;
+        break;
+      }
+    }
+    // F-type 감사보고서 없으면 A-type 사업보고서에서 시도
+    if (!rceptNo) {
+      const aParams = new URLSearchParams({
+        crtfc_key: apiKey,
+        corp_code: corpCode,
+        bgn_de: `${minYear - 1}0101`,
+        end_de: "20261231",
+        pblntf_ty: "A",
+        page_count: "10",
+      });
+      const aRes = await fetch(`${DART_API_BASE}/list.json?${aParams}`);
+      const aData = await aRes.json();
+      for (const it of aData.list || []) {
+        const nm: string = it.report_nm || "";
+        if (nm.includes("사업보고서") && !nm.includes("기재정정")) {
+          rceptNo = it.rcept_no;
+          console.log(`[DART] 감사보고서(F) 없음 → 사업보고서(A)에서 주석 추출 시도: ${nm}`);
+          break;
+        }
+      }
+    }
+    if (!rceptNo) return null;
+
+    // ZIP 다운로드 + 주석 추출
+    const docParams = new URLSearchParams({ crtfc_key: apiKey, rcept_no: rceptNo });
+    const docRes = await fetch(`${DART_API_BASE}/document.xml?${docParams}`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    const rawBuf = Buffer.from(await docRes.arrayBuffer());
+    if (rawBuf[0] !== 0x50 || rawBuf[1] !== 0x4B) return null;
+
+    const zip = await JSZip.loadAsync(rawBuf);
+    const fileNames = Object.keys(zip.files);
+
+    // ZIP 내 모든 파일에서 주석 추출 시도 (사업보고서는 여러 XML 포함)
+    let bestNotes: Record<string, string> = {};
+    for (const fileName of fileNames) {
+      const content = await zip.files[fileName].async("string");
+      const notes = extractNoteSections(content);
+      if (Object.keys(notes).length > Object.keys(bestNotes).length) {
+        bestNotes = notes;
+      }
+    }
+
+    if (Object.keys(bestNotes).length > 0) {
+      console.log(`[DART] 감사보고서 주석 ${Object.keys(bestNotes).length}개 섹션 추출 완료`);
+      return bestNotes;
+    }
+    return null;
+  } catch (e) {
+    console.warn("[DART] fetchAuditNotes 실패:", e instanceof Error ? e.message : e);
+    return null;
+  }
 }
 
 // ============================================================

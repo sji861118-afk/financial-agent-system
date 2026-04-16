@@ -209,6 +209,9 @@ function FinancialContent() {
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const [result, setResult] = useState<FinancialResult | null>(null);
+  // 증감사유 분석 임계값
+  const [yoyAmountThreshold, setYoyAmountThreshold] = useState("");
+  const [yoyPercentThreshold, setYoyPercentThreshold] = useState("");
 
   // 파일 업로드 관련 state (여러 파일 지원)
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
@@ -307,7 +310,15 @@ function FinancialContent() {
       const res = await fetch("/api/dart/financial", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ corpName: companyName, corpCode: selectedCorpCode, years }),
+        body: JSON.stringify({
+          corpName: companyName,
+          corpCode: selectedCorpCode,
+          years,
+          yoyThreshold: (yoyAmountThreshold || yoyPercentThreshold) ? {
+            amountMillions: yoyAmountThreshold ? parseInt(yoyAmountThreshold) : undefined,
+            percentChange: yoyPercentThreshold ? parseInt(yoyPercentThreshold) : undefined,
+          } : undefined,
+        }),
       });
       // Vercel 크래시 시 non-JSON 응답 대응
       const text = await res.text();
@@ -643,6 +654,29 @@ function FinancialContent() {
                       ))}
                     </select>
                   </div>
+                </div>
+                <div>
+                  <Label>증감사유 분석 (선택)</Label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      placeholder="기준금액 (백만원)"
+                      value={yoyAmountThreshold}
+                      onChange={(e) => setYoyAmountThreshold(e.target.value)}
+                      className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                    />
+                    <span className="text-muted-foreground text-xs whitespace-nowrap">또는</span>
+                    <input
+                      type="number"
+                      placeholder="기준비율 (%)"
+                      value={yoyPercentThreshold}
+                      onChange={(e) => setYoyPercentThreshold(e.target.value)}
+                      className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    입력 시 임계값 이상 변동 항목의 감사보고서 주석을 자동 분석합니다
+                  </p>
                 </div>
               </div>
               <Button onClick={handleSearch} disabled={loading} className="bg-indigo-600 hover:bg-indigo-700">

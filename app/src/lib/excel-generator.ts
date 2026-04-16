@@ -106,6 +106,14 @@ export interface ExcelReportData {
     fiscalYear: string;
     rawTableData?: string[][];
   } | null;
+  yoyAnalysis?: Array<{
+    account: string;
+    stmtType: "BS" | "IS";
+    changeAmount: number;
+    changePercent: number | null;
+    noteRef?: string;
+    noteText: string;
+  }>;
 }
 
 // ============================================================
@@ -524,6 +532,9 @@ function createFinancialSheet(
   if (years.length > 0) {
     ws.getColumn(years.length + 2).width = 15; // 증감액
     ws.getColumn(years.length + 3).width = 12; // 증감률
+    if (data.yoyAnalysis && data.yoyAnalysis.length > 0) {
+      ws.getColumn(years.length + 4).width = 50; // 증감사유
+    }
   }
 
   let row = 1;
@@ -643,7 +654,12 @@ function createFinancialSheet(
     }
     ws.getCell(row, years.length + 2).value = "전년비 증감액";
     ws.getCell(row, years.length + 3).value = "전년비 증감률";
-    applyHeaderStyle(ws, row, 1, years.length + 3);
+    const hasYoyAnalysis = data.yoyAnalysis && data.yoyAnalysis.length > 0;
+    const totalCols = hasYoyAnalysis ? years.length + 4 : years.length + 3;
+    if (hasYoyAnalysis) {
+      ws.getCell(row, years.length + 4).value = "증감사유 (주석)";
+    }
+    applyHeaderStyle(ws, row, 1, totalCols);
     row += 1;
 
     // Freeze panes below header
@@ -725,6 +741,21 @@ function createFinancialSheet(
               pctCell.font = NORMAL_FONT;
               pctCell.alignment = RIGHT_ALIGN;
               pctCell.border = THIN_BORDER;
+            }
+
+            // 증감사유 (주석 매칭 결과)
+            if (hasYoyAnalysis && data.yoyAnalysis) {
+              const targetType = stmtType === "BS" ? "BS" : "IS";
+              const yoyItem = data.yoyAnalysis.find(
+                (y) => y.account === rawAcct && y.stmtType === targetType
+              );
+              if (yoyItem && yoyItem.noteText) {
+                const noteCell = ws.getCell(row, years.length + 4);
+                noteCell.value = yoyItem.noteText;
+                noteCell.font = { name: FONT_NAME, size: 9 };
+                noteCell.alignment = { wrapText: true, vertical: "top" };
+                noteCell.border = THIN_BORDER;
+              }
             }
           }
         }

@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server";
 import { findCorpCode, findStockCodeByCorpCode } from "@/lib/dart-corp-codes";
-import { buildFinancialData, fetchAuditOpinion, fetchShareholders, fetchBorrowingNotes, type FinancialResult } from "@/lib/dart-api";
+import { buildFinancialData, fetchAuditOpinion, fetchShareholders, fetchBorrowingNotes, fetchAuditNotes, type FinancialResult } from "@/lib/dart-api";
+import { analyzeYoYChanges, type YoYThreshold, type YoYChangeItem } from "@/lib/yoy-note-analyzer";
 import { fetchFisisFinancialData, convertFisisToFinancialRows } from "@/lib/fisis-api";
 import { analyzeFinancial } from "@/lib/financial-analyzer";
 import { generateRuleBasedExpert } from "@/lib/rule-based-expert";
@@ -53,8 +54,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const { corpName, corpCode: directCorpCode, years, generateExcel: doExcel = true } =
-      await request.json();
+    const body = await request.json();
+    const corpName: string = body.corpName || "";
+    const directCorpCode: string | undefined = body.corpCode;
+    const years: string[] = body.years || [];
+    const doExcel: boolean = body.generateExcel ?? true;
+    const yoyThreshold: YoYThreshold | undefined = body.yoyThreshold;
 
     if (!corpName && !directCorpCode) {
       return Response.json(
@@ -260,6 +265,28 @@ export async function POST(request: NextRequest) {
             }
           : undefined;
 
+        // 증감사유 분석: 임계값이 설정된 경우 실행
+        let yoyAnalysis: YoYChangeItem[] | undefined;
+        if (yoyThreshold && (yoyThreshold.amountMillions || yoyThreshold.percentChange)) {
+          // 주석 데이터: Stage 3에서 이미 가져왔으면 result.notesSections 사용, 아니면 별도 다운로드
+          let notesSections = result.notesSections;
+          if (!notesSections && corp) {
+            // Stage 1(상장사 API) 데이터 → 감사보고서에서 주석 별도 추출
+            try {
+              notesSections = await fetchAuditNotes(corp.corpCode, displayYears) || undefined;
+            } catch (e) {
+              console.warn("[YoY] fetchAuditNotes failed:", e);
+            }
+          }
+          if (notesSections) {
+            yoyAnalysis = analyzeYoYChanges(
+              result.bsItems, result.isItems, result.years,
+              notesSections, yoyThreshold
+            );
+            console.log(`[YoY] 증감사유 분석: ${yoyAnalysis.length}건 감지 (임계값: ${yoyThreshold.amountMillions || '-'}백만원, ${yoyThreshold.percentChange || '-'}%)`);
+          }
+        }
+
         const excelBuffer = await generateExcelReport({
           corpName,
           companyInfo: result.companyInfo,
@@ -277,6 +304,7 @@ export async function POST(request: NextRequest) {
           auditOpinion,
           shareholders,
           borrowingNotes,
+          yoyAnalysis,
         });
 
         fileSize = excelBuffer.length;
