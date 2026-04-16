@@ -413,6 +413,67 @@ const IS_CORE_PATTERNS: [RegExp, string[], number][] = [
   [/총포괄/, [], 1700],
 ];
 
+// ── BS 섹션 분류 및 재정렬 헬퍼 ──
+const BS_LIAB_KEYWORDS = [
+  "부채총계", "유동부채", "비유동부채",
+  "차입금", "차입부채", "단기차입금", "장기차입금",
+  "사채", "회사채", "전환사채", "교환사채",
+  "미지급금", "미지급비용", "미지급법인세",
+  "선수금", "선수수익", "예수금",
+  "충당부채", "퇴직급여부채", "순확정급여부채",
+  "이연법인세부채", "당기법인세부채",
+  "보험계약부채", "투자계약부채", "재보험계약부채",
+  "기타계약부채", "특별계정부채",
+  "파생상품부채", "기타금융부채", "기타부채",
+  "유동성장기부채", "리스부채",
+  "매입채무", "단기매입채무",
+];
+const BS_EQUITY_KEYWORDS = [
+  "자본총계", "자본금", "자본잉여금", "자본조정",
+  "이익잉여금", "결손금", "기타포괄손익누계액",
+  "신종자본증권", "비지배지분", "지배기업소유주지분",
+  "기타자본", "기타자본항목", "자기주식",
+];
+
+function classifyBsSectionByName(nm: string): 0 | 1 | 2 | 9 {
+  const n = nm.replace(/[\s()]/g, "");
+  if (n === "자본과부채총계" || n === "부채와자본총계") return 9;
+  if (BS_EQUITY_KEYWORDS.some(k => n === k.replace(/\s/g, "") || n.includes(k.replace(/\s/g, "")))) return 2;
+  if (BS_LIAB_KEYWORDS.some(k => n === k.replace(/\s/g, "") || n.includes(k.replace(/\s/g, "")))) return 1;
+  return 0; // 자산
+}
+
+/** string[] 배열을 자산→자산총계→부채→부채총계→자본→자본총계→자본과부채총계 순으로 재정렬 (in-place) */
+function reorderBsAccounts(order: string[]) {
+  const norm = (s: string) => s.replace(/[\s()]/g, "");
+  const assets: string[] = [], liabs: string[] = [], equities: string[] = [];
+  let totalAsset: string | null = null, totalLiab: string | null = null;
+  let totalEquity: string | null = null, totalAll: string | null = null;
+
+  for (const nm of order) {
+    const n = norm(nm);
+    if (n === "자산총계") totalAsset = nm;
+    else if (n === "부채총계") totalLiab = nm;
+    else if (n === "자본총계") totalEquity = nm;
+    else if (n === "자본과부채총계" || n === "부채와자본총계") totalAll = nm;
+    else {
+      const sec = classifyBsSectionByName(nm);
+      if (sec === 2) equities.push(nm);
+      else if (sec === 1) liabs.push(nm);
+      else assets.push(nm);
+    }
+  }
+
+  order.length = 0;
+  order.push(...assets);
+  if (totalAsset) order.push(totalAsset);
+  order.push(...liabs);
+  if (totalLiab) order.push(totalLiab);
+  order.push(...equities);
+  if (totalEquity) order.push(totalEquity);
+  if (totalAll) order.push(totalAll);
+}
+
 function getIsStandardOrder(accountNm: string): number {
   const norm = normalizeAcct(accountNm);
   // 1. 정확 매칭 우선
@@ -503,6 +564,38 @@ function buildStatements(
       }
     }
     if (accountOrder.length) break;
+  }
+
+  // BS 항목: 자산→자산총계→부채→부채총계→자본→자본총계→자본과부채총계 순서 보장
+  const isBS = sjFilter.includes("BS");
+  if (isBS && accountOrder.length > 0) {
+    const norm = (s: string) => s.replace(/[\s()]/g, "");
+    const assets: typeof accountOrder = [], liabs: typeof accountOrder = [], equities: typeof accountOrder = [];
+    let tAsset: typeof accountOrder[0] | null = null, tLiab: typeof accountOrder[0] | null = null;
+    let tEquity: typeof accountOrder[0] | null = null, tAll: typeof accountOrder[0] | null = null;
+
+    for (const item of accountOrder) {
+      const n = norm(item.nm);
+      if (n === "자산총계") tAsset = item;
+      else if (n === "부채총계") tLiab = item;
+      else if (n === "자본총계") tEquity = item;
+      else if (n === "자본과부채총계" || n === "부채와자본총계") tAll = item;
+      else {
+        const sec = classifyBsSectionByName(item.nm);
+        if (sec === 2) equities.push(item);
+        else if (sec === 1) liabs.push(item);
+        else assets.push(item);
+      }
+    }
+
+    accountOrder.length = 0;
+    accountOrder.push(...assets);
+    if (tAsset) accountOrder.push(tAsset);
+    accountOrder.push(...liabs);
+    if (tLiab) accountOrder.push(tLiab);
+    accountOrder.push(...equities);
+    if (tEquity) accountOrder.push(tEquity);
+    if (tAll) accountOrder.push(tAll);
   }
 
   // IS/CIS 항목: 표준 순서로 재정렬 (DART ord 필드가 부정확한 기업 대비)
@@ -977,6 +1070,11 @@ function tryKeyAccounts(
       for (const std of withStd) { reordered.push(std.nm); reordered.push(...(insertMap.get(std.stdOrd) || [])); }
       order.length = 0;
       order.push(...reordered);
+    }
+
+    // BS 항목이면 섹션별 재정렬: 자산→자산총계→부채→부채총계→자본→자본총계
+    if (sjFilter.includes("BS") && order.length > 0) {
+      reorderBsAccounts(order);
     }
 
     const rows: FinancialRow[] = [];
