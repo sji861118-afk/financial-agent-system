@@ -403,3 +403,61 @@ export function createEmptyCase(): AppraisalCase {
     updatedAt: now,
   };
 }
+
+// === 신청서 양식 자동화 v3 (2026-04-17) ===
+
+export type ApplicationFormType = 'apartment-pf' | 'industrial-center' | 'land-pf';
+
+export interface ParsedReportMeta {
+  fileName: string;
+  pages: number;
+  appraiser?: string;
+  baseDate?: string;
+  parseStatus: 'ok' | 'partial' | 'failed';
+}
+
+export interface AppraisalData {
+  source: {
+    appraisalReports: ParsedReportMeta[];
+    feasibilityReports: ParsedReportMeta[];
+    parsedAt: string;
+  };
+  formType: ApplicationFormType;
+  detectionConfidence: number;
+
+  collateral: CollateralAnalysis;
+  collateralDetail: CollateralDetailItem[];
+  comparatives: ComparativeCase[];
+  supply?: SupplyOverview;
+
+  missingFields: string[];
+}
+
+export interface ReviewFinding {
+  severity: 'ERROR' | 'WARNING' | 'INFO';
+  perspective: 'appraiser' | 'reviewer';
+  category: string;
+  message: string;
+  detail?: string;
+  sectionRef?: { sheet: string; cell: string };
+  suggestedAction?: string;
+}
+
+export interface GenerateAppraisalResponse {
+  success: boolean;
+  excelBase64?: string;
+  detectedType: ApplicationFormType;
+  detectionConfidence: number;
+  findings: ReviewFinding[];
+  warnings: string[];
+  fileName: string;
+}
+
+export function mapToApplicationFormType(pt: PropertyType): ApplicationFormType | null {
+  switch (pt) {
+    case '아파트': return 'apartment-pf';
+    case '지식산업센터': return 'industrial-center';
+    case '토지': return 'land-pf';
+    default: return null;
+  }
+}
