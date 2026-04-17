@@ -172,14 +172,21 @@ function parseConcatenatedCaseRow(
 // ── 텍스트 추출 ──
 
 export async function extractLines(buffer: Buffer): Promise<string[]> {
-  const mod = await import("pdf-parse");
-  const pdfParse = (mod as any).default || mod;
-  const data = await pdfParse(buffer);
-  const text: string = data.text || "";
-  if (!text || text.trim().length < 50) return [];
-  // NULL 문자(\u0000)를 공백으로 치환 — pdf-parse가 일부 PDF에서 NULL을 삽입함
-  const cleaned = text.replace(/\u0000/g, " ");
-  return cleaned.split(/\n/).filter((l: string) => l.trim().length > 0);
+  // pdf-parse index.js는 디버그용 테스트 PDF를 require 시점에 읽으려 하여 일부 환경에서 에러.
+  // 실제 파서만 직접 import하여 우회.
+  try {
+    const mod = await import("pdf-parse/lib/pdf-parse.js");
+    const pdfParse = (mod as any).default || mod;
+    const data = await pdfParse(buffer);
+    const text: string = data.text || "";
+    if (!text || text.trim().length < 50) return [];
+    // NULL 문자(\u0000)를 공백으로 치환 — pdf-parse가 일부 PDF에서 NULL을 삽입함
+    const cleaned = text.replace(/\u0000/g, " ");
+    return cleaned.split(/\n/).filter((l: string) => l.trim().length > 0);
+  } catch (e: any) {
+    console.warn(`[appraisal-parser] pdf-parse 실패: ${e?.message || e}`);
+    return [];
+  }
 }
 
 // ── 섹션 파서 스텁 (Task 3~7에서 구현) ──
