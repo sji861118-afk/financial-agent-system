@@ -171,7 +171,7 @@ function parseConcatenatedCaseRow(
 
 // ── 텍스트 추출 ──
 
-async function extractLines(buffer: Buffer): Promise<string[]> {
+export async function extractLines(buffer: Buffer): Promise<string[]> {
   const mod = await import("pdf-parse");
   const pdfParse = (mod as any).default || mod;
   const data = await pdfParse(buffer);
@@ -1083,4 +1083,11 @@ export async function parseAppraisalPdf(
     confidence,
     warnings,
   };
+}
+
+// ── Raw text 추출 헬퍼 (물건유형 자동감지용) ──
+
+export async function extractRawText(buffer: Buffer): Promise<string> {
+  const lines = await extractLines(buffer);
+  return lines.join('\n');
 }
