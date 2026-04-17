@@ -77,3 +77,34 @@ export function applyFooter(ws: Worksheet, row: number, source: string): void {
 export function setNumberFormat(cell: Cell, format: keyof typeof NUMBER_FORMATS): void {
   cell.numFmt = NUMBER_FORMATS[format];
 }
+
+/**
+ * ExcelJS는 undefined cell value에서 'richText' 접근 에러 발생.
+ * 모든 cell value를 안전한 string|number로 정규화.
+ */
+export function safeCellValue(v: unknown): string | number {
+  if (v === undefined || v === null) return '';
+  if (typeof v === 'number') {
+    if (!Number.isFinite(v)) return '';
+    return v;
+  }
+  if (typeof v === 'string') return v;
+  if (typeof v === 'boolean') return v ? 'Y' : 'N';
+  return String(v);
+}
+
+/**
+ * Worksheet 전체를 순회하여 undefined cell value를 ''로 정규화.
+ * Excel 생성 직전에 한 번 호출해서 Cannot read properties of undefined 방어.
+ */
+export function sanitizeWorksheet(ws: Worksheet): void {
+  ws.eachRow({ includeEmpty: false }, (row) => {
+    row.eachCell({ includeEmpty: false }, (cell) => {
+      if (cell.value === undefined || cell.value === null) {
+        cell.value = '';
+      } else if (typeof cell.value === 'number' && !Number.isFinite(cell.value)) {
+        cell.value = '';
+      }
+    });
+  });
+}

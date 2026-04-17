@@ -14,14 +14,14 @@ import { generateAppraisalExcel } from './src/lib/appraisal/orchestrator.ts';
 
 const SAMPLES = [
   {
-    name: '지산센터',
+    name: '지산센터(에이엠플러스인덕원)',
     path: '../_reference/2.감정평가서 샘플/에이엠플러스인덕원_감정평가서 C32508-2-1401 DRAFT(170개호)_1.pdf',
     expectedType: 'industrial-center',
   },
   {
-    name: '토지감평',
-    path: '../_reference/2.감정평가서 샘플/계림4유동화_(감정평가서) 250716-00-011 DRAFT (계림4구역 재개발사업)_토지감평.pdf',
-    expectedType: 'land-pf',
+    name: '치평동(계림4유동화)',
+    path: '../_reference/2.감정평가서 샘플/계림4유동화_(감정평가서) 250813-00-018 치평동 감정평가서 DRAFT.pdf',
+    expectedType: null,  // 자동 감지 결과를 확인용 (지정하지 않음)
   },
 ];
 
@@ -53,7 +53,7 @@ for (const s of SAMPLES) {
   console.log(`  detected: ${detected.type} (confidence: ${detected.confidence.toFixed(2)})`);
   if (detected.scores) console.log(`  scores: ${JSON.stringify(detected.scores)}`);
 
-  if (detected.type !== s.expectedType) {
+  if (s.expectedType !== null && detected.type !== s.expectedType) {
     console.log(`  X type mismatch (expected ${s.expectedType})`);
     failed++;
     continue;

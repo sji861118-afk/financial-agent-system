@@ -15,22 +15,32 @@ export function buildSupplyStatusSheet(
   ws.getColumn(2).width = 30;
 
   // 사업 개요
-  const p = supply.project;
+  const p = supply.project as Record<string, unknown>;
+  // 주의: p.constructor는 JS prototype property로 fallback되어 함수가 들어옴.
+  // Object.hasOwn으로 실제 필드만 추출.
+  const own = (key: string): string | number | undefined => {
+    if (!Object.hasOwn(p, key)) return undefined;
+    const v = p[key];
+    if (v === undefined || v === null || typeof v === 'function') return undefined;
+    if (typeof v === 'string' || typeof v === 'number') return v;
+    return String(v);
+  };
+  const grossArea = own('grossArea') as { sqm?: number } | undefined;
   const labelValuePairs: [string, string | number | undefined][] = [
-    ['사업명', p.name],
-    ['사업목적물', p.purpose],
-    ['시행사', p.developer],
-    ['시공사', p.constructor],
-    ['소재지', p.address],
-    ['용도지역', p.zoning],
-    ['연면적(㎡)', p.grossArea?.sqm],
-    ['건폐율(%)', p.coverageRatio],
-    ['용적률(%)', p.floorAreaRatio],
-    ['주차대수', p.parking],
-    ['규모', p.scale],
-    ['공사기간', p.constructionPeriod],
-    ['준공일', p.completionDate],
-    ['분양률(%)', p.salesRate],
+    ['사업명', own('name')],
+    ['사업목적물', own('purpose')],
+    ['시행사', own('developer')],
+    ['시공사', own('constructor')],
+    ['소재지', own('address')],
+    ['용도지역', own('zoning')],
+    ['연면적(㎡)', typeof grossArea === 'object' && grossArea ? grossArea.sqm : undefined],
+    ['건폐율(%)', own('coverageRatio')],
+    ['용적률(%)', own('floorAreaRatio')],
+    ['주차대수', own('parking')],
+    ['규모', own('scale')],
+    ['공사기간', own('constructionPeriod')],
+    ['준공일', own('completionDate')],
+    ['분양률(%)', own('salesRate')],
   ];
 
   labelValuePairs.forEach((pair, i) => {

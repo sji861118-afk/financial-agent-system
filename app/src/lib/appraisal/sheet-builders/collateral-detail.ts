@@ -24,35 +24,44 @@ export function buildCollateralDetailSheet(
   ws.getColumn(1).width = 6;
   for (let i = 2; i <= headers.length; i++) ws.getColumn(i).width = 14;
 
+  // ExcelJS는 undefined cell value에서 'richText' 접근 에러 발생 → 모든 값 안전화
+  const safe = (v: unknown): string | number => {
+    if (v === undefined || v === null) return '';
+    if (typeof v === 'number' && !Number.isFinite(v)) return '';
+    if (typeof v === 'string' || typeof v === 'number') return v;
+    return String(v);
+  };
+
   items.forEach((it, i) => {
     const row = 5 + i;
     if (formType === 'apartment-pf') {
-      ws.getCell(row, 1).value = it.no;
-      ws.getCell(row, 2).value = (it.unit ?? '').split('-')[0] || '';
-      ws.getCell(row, 3).value = (it.unit ?? '').split('-')[1] || it.unit;
+      const unit = it.unit ?? '';
+      ws.getCell(row, 1).value = safe(it.no);
+      ws.getCell(row, 2).value = safe(unit.split('-')[0] || '');
+      ws.getCell(row, 3).value = safe(unit.split('-')[1] || unit);
       ws.getCell(row, 4).value = '';
-      ws.getCell(row, 5).value = it.areaSqm;
+      ws.getCell(row, 5).value = safe(it.areaSqm);
       ws.getCell(row, 6).value = '';
-      ws.getCell(row, 7).value = it.appraisalValue;
-      ws.getCell(row, 8).value = it.appraisalPricePerPyeong;
-      ws.getCell(row, 9).value = it.status;
+      ws.getCell(row, 7).value = safe(it.appraisalValue);
+      ws.getCell(row, 8).value = safe(it.appraisalPricePerPyeong);
+      ws.getCell(row, 9).value = safe(it.status);
     } else if (formType === 'industrial-center') {
-      ws.getCell(row, 1).value = it.no;
+      ws.getCell(row, 1).value = safe(it.no);
       ws.getCell(row, 2).value = '';
-      ws.getCell(row, 3).value = it.floor;
-      ws.getCell(row, 4).value = it.unit;
-      ws.getCell(row, 5).value = it.areaSqm;
-      ws.getCell(row, 6).value = it.appraisalValue;
-      ws.getCell(row, 7).value = it.appraisalPricePerPyeong;
-      ws.getCell(row, 8).value = it.status;
+      ws.getCell(row, 3).value = safe(it.floor);
+      ws.getCell(row, 4).value = safe(it.unit);
+      ws.getCell(row, 5).value = safe(it.areaSqm);
+      ws.getCell(row, 6).value = safe(it.appraisalValue);
+      ws.getCell(row, 7).value = safe(it.appraisalPricePerPyeong);
+      ws.getCell(row, 8).value = safe(it.status);
     } else { // land-pf
-      ws.getCell(row, 1).value = it.no;
-      ws.getCell(row, 2).value = it.unit;
+      ws.getCell(row, 1).value = safe(it.no);
+      ws.getCell(row, 2).value = safe(it.unit);
       ws.getCell(row, 3).value = '';
-      ws.getCell(row, 4).value = it.areaSqm;
-      ws.getCell(row, 5).value = it.areaPyeong;
-      ws.getCell(row, 6).value = it.appraisalPricePerPyeong;
-      ws.getCell(row, 7).value = it.appraisalValue;
+      ws.getCell(row, 4).value = safe(it.areaSqm);
+      ws.getCell(row, 5).value = safe(it.areaPyeong);
+      ws.getCell(row, 6).value = safe(it.appraisalPricePerPyeong);
+      ws.getCell(row, 7).value = safe(it.appraisalValue);
       ws.getCell(row, 8).value = '';
     }
     for (let c = 1; c <= headers.length; c++) {

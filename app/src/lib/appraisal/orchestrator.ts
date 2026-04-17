@@ -10,6 +10,8 @@ import { buildApartmentPfWorkbook } from './property-templates/apartment-pf.ts';
 import { buildIndustrialCenterWorkbook } from './property-templates/industrial-center.ts';
 // @ts-expect-error TS5097 — Node v24 strip-types requires .ts extension at runtime
 import { buildLandPfWorkbook } from './property-templates/land-pf.ts';
+// @ts-expect-error TS5097 — Node v24 strip-types requires .ts extension at runtime
+import { sanitizeWorksheet } from './sheet-builders/form-styles.ts';
 
 export interface OrchestratorInput {
   data: AppraisalData;
@@ -50,6 +52,9 @@ export async function generateAppraisalExcel(input: OrchestratorInput): Promise<
   };
 
   builderByType[data.formType](wb, data, findings);
+
+  // ExcelJS write 직전에 모든 워크시트의 undefined cell value를 ''로 정규화 (방어층)
+  wb.eachSheet((ws) => sanitizeWorksheet(ws));
 
   const arrayBuffer = await wb.xlsx.writeBuffer();
   const buffer = Buffer.from(arrayBuffer as ArrayBuffer);
