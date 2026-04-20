@@ -1,5 +1,14 @@
 # 감정평가서 심층개발 Implementation Plan
 
+> **✅ 실행 완료 (2026-04-20)**: 전 Phase(1~5) 구현 완료, 총 13 커밋 (`2e9e575` → `b79dd81`).
+> 실 PDF 2종(에이엠플러스인덕원 지산센터, 계림4유동화 치평동) E2E 5/5 통과. 감수의견 품질 개선(false positive 제거 + 통계 분석) 추가 적용.
+> 실행 중 발생한 주요 설계 변경:
+>   - **Bug fix**: `SupplyOverview.project.constructor` 필드가 JS prototype의 `Object.constructor` 함수와 충돌 → `Object.hasOwn()` 기반 `own()` 헬퍼 추가
+>   - **Infra fix**: Node v24 `--experimental-strip-types` + tsx 충돌 → `.ts` 확장자 + `@ts-expect-error TS5097` + node 직접 실행
+>   - **품질 개선**: `auditors/stats-helpers.ts` 신규 (computeStats/detectOutliers/formatKRW/classifyScale). missingFields 분기로 false positive 제거.
+>   - **슬림화**: `appraisal-excel.ts` 1,449 → 343줄 (시산가액·경매통계만 보존)
+> 미해결: 치평동 `appraiser` 정규식 버그, 지산센터 비교사례 226% 괴리, 프로덕션 배포.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** PDF(감정평가서/사업성평가보고서) 업로드 → 물건유형 자동감지 → 2개 감수 에이전트 검증 → 신청서 양식 Excel 생성 자동화 도구 구현.

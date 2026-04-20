@@ -55,6 +55,28 @@ output: 검증된 재무현황 Excel (.xlsx) + QA 리포트
 └────────────────────────────────────────────────────────────┘
 ↓
 output: 여신승인신청서 DOCX
+
+========================================================
+
+[Track C. 감정평가서 분석 자동화 v3 (2026-04-17 추가)]
+↓
+┌───────────────────── /appraisal 페이지 ─────────────────────┐
+│  감정평가서/사업성평가보고서 PDF 업로드 + 유형 자동감지      │
+└───────────────────────────┬────────────────────────────────┘
+                            ↓
+┌───────── /api/appraisal/generate (서버 파이프라인) ─────────┐
+│  1. parseAppraisalPdf   (기존 appraisal-parser v2 재사용)    │
+│  2. detectApplicationFormType (키워드 점수 기반)              │
+│  3. adaptParserResult   (Partial → Complete 정규화)          │
+│  4. ★ 2 감수 에이전트 ★                                       │
+│     ├─ appraiser-auditor  (감정평가사 관점)                  │
+│     └─ reviewer-auditor   (심사역 관점)                       │
+│     → ReviewFinding[] (ERROR/WARNING/INFO)                   │
+│  5. property-templates/{apt|industrial|land} → workbook     │
+│     └─ sheet-builders × 5 (감수의견+담보+상세+비준+공급)    │
+└───────────────────────────┬────────────────────────────────┘
+                            ↓
+output: 신청서 양식 Excel (감수의견 시트 포함) + findings JSON
 ```
 
 ## 에이전트 구성
@@ -83,6 +105,21 @@ output: 여신승인신청서 DOCX
 | excel-parser | `여신심사_워크스페이스/_공통/excel-parser.md` | SKILL — 재무현황 Excel 파싱 → 구조화 객체 | Claude Opus |
 | calculator | `여신심사_워크스페이스/_공통/calculator.md` | SKILL — 담보가치/사업성 계산 (유형별 분기) | Claude Opus |
 | data-schema | `여신심사_워크스페이스/_공통/data-schema.md` | SKILL — Excel 필드 → 신청서 필드 매핑 테이블 | - (참조) |
+
+### Track C. 감정평가서 분석 자동화 v3
+
+| 파일 경로 | 역할 한 줄 |
+|-----------|-----------|
+| `app/src/lib/appraisal/orchestrator.ts` | 감수→워크북 빌드 파이프라인 조립 |
+| `app/src/lib/appraisal/property-detector.ts` | PDF 키워드 점수 기반 물건유형 자동감지 |
+| `app/src/lib/appraisal/parser-adapter.ts` | Partial 파서 결과 → Complete AppraisalData 정규화 (derived 값 도출) |
+| `app/src/lib/appraisal/auditors/appraiser-auditor.ts` | 감정평가사 관점 검증 (평가방법/호별분포/비교사례 괴리율/기준시점) |
+| `app/src/lib/appraisal/auditors/reviewer-auditor.ts` | 심사역 관점 검증 (LTV/규모분류/거래시장/분양현황/평가시점위험) |
+| `app/src/lib/appraisal/auditors/stats-helpers.ts` | 통계 도구 (computeStats, detectOutliers, formatKRW, classifyScale) |
+| `app/src/lib/appraisal/sheet-builders/*.ts` | 5개 시트 빌더 (감수의견/담보분석/상세담보/비준사례/공급분양) |
+| `app/src/lib/appraisal/property-templates/*.ts` | 3개 템플릿 (apartment-pf/industrial-center/land-pf) |
+| `app/src/app/api/appraisal/generate/route.ts` | 단일 멀티파트 엔드포인트 |
+| `app/src/app/appraisal/page.tsx` | 업로드 UI + 감수결과 미리보기 + 다운로드 |
 
 ## 기술 스택
 - **AI**: Claude Opus (Track B 에이전트), 룰 기반 분석 엔진 (Track A)
@@ -119,15 +156,26 @@ cd docx-generator
 claude "planner.md를 참고해서 여신승인신청서를 작성해줘"
 ```
 
+### Track C. 감정평가서 분석 (웹)
+```bash
+cd app && npm run dev
+# http://localhost:3000/appraisal 에서 PDF 업로드 → 신청서 양식 Excel 다운로드
+# API 직접 호출: POST /api/appraisal/generate (multipart/form-data)
+#   fields: appraisalFiles, feasibilityFiles(선택), propertyType(auto|apartment-pf|industrial-center|land-pf)
+# 로컬 E2E: node --experimental-strip-types --no-warnings test-appraisal-e2e.mjs
+```
+
 ## 작업 컨텍스트 (Claude용)
 > 이 섹션은 Claude Code가 프로젝트를 이어받을 때 참조하는 구간입니다.
 
 ### 현재 진행 상태
 - [x] 완료된 에이전트 (Track A): orchestrator, data-collector, parser, merger, qa-verifier, financial-analyzer, excel-generator, rule-based-expert
 - [x] 완료된 에이전트 (Track B): planner, section-writer, opinion-writer, reviewer, excel-parser, calculator, data-schema
+- [x] Track C 감정평가 자동화 v3 (2026-04-17~20): 5 Phase 완료, 실 PDF 2종 E2E 5/5 통과, 13 커밋 (2e9e575→b79dd81)
 - [ ] 미완성: qa-verifier ESCALATE 시 사용자 응답 → 재처리 루프 (현재 표시만 됨)
 - [ ] 미완성: Track B docx-generator 실제 DOCX 출력 (현재 프롬프트 구조만 완성)
-- [ ] 다음 작업: 감사보고서 파싱 실데이터 검증, PDF IS 파싱 Vercel 작동 확인
+- [ ] 미완성: Track C 프로덕션 배포 (로컬 검증만 완료, 아직 loan-app-next 복사·Vercel 업로드 안 됨)
+- [ ] 다음 작업: 치평동 appraiser 추출 버그 수정, /appraisal 브라우저 수동 E2E, 지산센터 비교사례 226% 괴리 조사
 
 ### 설계 결정 이유
 
@@ -150,6 +198,9 @@ Track A(웹앱)는 범용 재무데이터 조회 도구이고, Track B(신청서
 - PDF 업로드 IS 파싱이 Vercel 서버리스에서 작동하는지 최종 확인 필요
 - Vercel Hobby 플랜 60초 제한으로 대용량 감사보고서 ZIP 처리 시 타임아웃 가능
 - Track B DOCX 생성기는 프롬프트 구조만 완성, 실 출력 미검증
+- **Track C**: 치평동 샘플 `appraiser` 필드에 본문 텍스트 잘못 캡처(파서 정규식 버그)
+- **Track C**: 지산센터 비교사례 평단가 9백만/평 (본건 31백만/평 대비 226% 괴리) — 데이터 출처 확인 필요
+- **Track C**: `appraisal-excel.ts` 1,449→343줄 슬림화. 레거시 `/api/appraisal/excel` 라우트는 시산가액/경매통계만 반환 (신규 기능은 `/api/appraisal/generate` 사용)
 
 ### 폴더 구조
 ```
@@ -159,12 +210,14 @@ Track A(웹앱)는 범용 재무데이터 조회 도구이고, Track B(신청서
 ├── AGENTS.md                          # Next.js 에이전트 규칙
 ├── blueprint-financial-extraction.md  # 에이전트 시스템 설계서
 │
-├── app/                               # Track A. 재무분석 웹앱 (Next.js 16)
+├── app/                               # Track A+C. 재무분석 + 감정평가 웹앱 (Next.js 16)
 │   ├── src/
 │   │   ├── app/                       # App Router (페이지 + API)
 │   │   │   ├── api/dart/financial/    # 재무조회 API (+ QA 검수)
 │   │   │   ├── api/dart/merge/        # 병합 API (+ QA 검수)
 │   │   │   ├── api/upload/            # 파일 업로드 파서
+│   │   │   ├── api/appraisal/generate/# Track C 감정평가→Excel 생성 (신규)
+│   │   │   ├── appraisal/             # Track C 업로드 페이지 (신규)
 │   │   │   └── financial/             # 재무조회 페이지
 │   │   ├── components/ui/             # shadcn/ui 컴포넌트
 │   │   ├── lib/
@@ -176,6 +229,15 @@ Track A(웹앱)는 범용 재무데이터 조회 도구이고, Track B(신청서
 │   │   │   │   ├── qa-verifier.ts     # 4단계 자동 검수
 │   │   │   │   ├── types.ts           # 공유 타입
 │   │   │   │   └── index.ts           # 모듈 export
+│   │   │   ├── appraisal/             # Track C 감정평가 자동화 (신규)
+│   │   │   │   ├── orchestrator.ts    # 감수→빌드 파이프라인
+│   │   │   │   ├── property-detector.ts # 물건유형 자동감지
+│   │   │   │   ├── parser-adapter.ts  # Partial→Complete 정규화
+│   │   │   │   ├── auditors/          # 2 감수 에이전트 + stats-helpers
+│   │   │   │   ├── sheet-builders/    # 5 시트 빌더
+│   │   │   │   └── property-templates/ # 3 유형별 템플릿
+│   │   │   ├── appraisal-parser.ts    # 감정평가서 PDF 파서 v2
+│   │   │   ├── appraisal-excel.ts     # 시산가액·경매통계 시트 (슬림화)
 │   │   │   ├── dart-api.ts            # DART 전자공시 API
 │   │   │   ├── financial-analyzer.ts  # 재무비율 분석 엔진
 │   │   │   ├── excel-generator.ts     # Excel 보고서 생성
@@ -208,11 +270,17 @@ Track A(웹앱)는 범용 재무데이터 조회 도구이고, Track B(신청서
 - 감사보고서 간 계정명 표기 차이 → normalizeAcct() 통합으로 해결
 - DART 분기보고서 IS는 thstrm_add_amount(누적) 사용 필수
 - push 후 반드시 `npx vercel ls`로 빌드 성공 확인
+- **[2026-04-20] JS prototype shadowing**: TS에서 `string`으로 타이핑된 필드명이 `constructor`/`toString` 등 Object.prototype property와 겹치면, 파서가 미할당 시 prototype의 함수가 반환됨 → ExcelJS crash. `Object.hasOwn()` 기반 접근 필수
+- **[2026-04-20] Node v24 strip-types + tsx 충돌**: `npx tsx` 대신 `node --experimental-strip-types --no-warnings test-X.mjs` 사용. 상대 import에 `.ts` 확장자 명시 + `@ts-expect-error TS5097` 주석
+- **[2026-04-20] 감수 에이전트 false positive 방지**: 데이터 누락(추출 실패) vs 실제 위반을 `missingFields: string[]`로 구분. 누락은 INFO, 위반은 ERROR/WARNING
+- **[2026-04-20] Partial→Complete 어댑터 패턴**: 파서는 부분 결과만 반환, 어댑터에서 `EMPTY_*` 기본값 + spread + derived value(예: collateralDetail에서 totalArea 도출)로 정규화
+- **[2026-04-20] 통계 도구**: IQR 기반 이상치 검출, CV(변동계수 = stddev/mean)로 상대편차 판단, 규모별 분류(50/300/1000억 임계)는 대형 PF 위험 분류에 실용적
 
 ## 버전 이력
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|---------|
+| v2.0 | 2026-04-17~20 | **Track C 감정평가 자동화 v3** — 5 Phase 신규 구현 (2 감수 에이전트 + 3 property templates + 5 sheet builders + parser-adapter + API/UI), 실 PDF 2종 E2E 5/5 통과, 감수의견 품질 개선 (false positive 제거 + 통계 분석), 13 커밋 |
 | v1.0 | 2026-03-27 | 초기 구조화 — 에이전트 시스템 (오케스트레이터 + 4 서브에이전트 + QA 검수) 구축, 통합 README 생성 |
 | v0.9 | 2026-03-26 | 감사보고서 XML 파싱 정확도 대폭 개선 (주석번호 필터, normalizeAcct, 현재가치할인차금 순액) |
 | v0.8 | 2026-03-26 | 업로드 전용 Excel + PDF 파싱 + 분기보고서 누적금액 + BS/IS 병합 |
