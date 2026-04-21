@@ -193,6 +193,43 @@ export function auditFinancialData(result: FinancialResult): AuditReport {
     }
   }
 
+  // === 7. EBITDA ≈ 영업이익 동치 감지 (감가상각비/무형자산상각비 미추출 경고) ===
+  // EBITDA = 영업이익 + 감가상각비 + 무형자산상각비. CF 조정항목 누락 시 EBITDA=영업이익이 됨
+  function checkEbitdaDepreciation(
+    isItems: FinancialRow[],
+    cfItems: FinancialRow[],
+    ratios: Record<string, Record<string, string>>,
+    label: string,
+  ) {
+    for (const yr of years) {
+      const ebitdaV = parseFloat((ratios[yr]?.["EBITDA"] || "0").replace(/,/g, ""));
+      const opIncome =
+        findVal(isItems, "영업이익", yr) ??
+        findVal(isItems, "영업손익", yr);
+      if (!isNaN(ebitdaV) && ebitdaV !== 0 && opIncome !== null && opIncome !== 0) {
+        const gap = Math.abs(ebitdaV - opIncome);
+        const ratioOfOp = gap / Math.abs(opIncome);
+        // EBITDA와 영업이익 차이가 영업이익의 1% 미만 → D&A 사실상 0으로 간주
+        if (ratioOfOp < 0.01) {
+          // CF에 감가상각비/무형자산상각비 행이 있는지 교차 검증
+          const hasDepr = cfItems.some((r) => /감가상각|유형자산감가|사용권자산상각/.test(r.account));
+          const hasAmort = cfItems.some((r) => /무형자산상각|무형자산감가/.test(r.account));
+          findings.push({
+            severity: "WARN",
+            category: "EBITDA 산출",
+            message: `[${label}] ${yr}년 EBITDA(${ebitdaV.toLocaleString()}) ≈ 영업이익(${opIncome.toLocaleString()}) — 감가상각비/무형자산상각비가 반영되지 않음 (현금흐름표 조정항목 누락: 감가=${hasDepr ? "있음" : "없음"}, 무형상각=${hasAmort ? "있음" : "없음"})`,
+            suggestion: "사업보고서 주석(D&A 통합 라벨) 기반 보강을 시도했으나 실패 — 주석 양식이 비표준이거나 해당 연도 미공시. 수기 확인 필요",
+          });
+        }
+      }
+    }
+  }
+
+  if (result.hasOfs) checkEbitdaDepreciation(result.isItems, result.cfItems, result.ratios, "개별");
+  if (result.hasCfs && result.isItemsCfs && result.cfItemsCfs && result.ratiosCfs) {
+    checkEbitdaDepreciation(result.isItemsCfs, result.cfItemsCfs, result.ratiosCfs, "연결");
+  }
+
   // === 6. 연도간 급변 검증 ===
   if (years.length >= 2) {
     const prev = years[years.length - 2];

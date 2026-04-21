@@ -1689,6 +1689,258 @@ async function fetchAuditReportData(
 }
 
 // ============================================================
+// 감가상각비/무형자산상각비 보강 (사업보고서 XML 주석 파싱)
+// 상장사 fnlttSinglAcntAll CF에 영업활동 조정항목 누락 시 호출
+// 1순위: "감가상각비 및 무형자산상각비" 통합 라벨, 2순위: 개별 합산
+// ============================================================
+
+type DAResultPerFs = {
+  depreciation: Record<string, number>;
+  amortization: Record<string, number>;
+};
+
+type DAResult = {
+  ofs: DAResultPerFs | null;
+  cfs: DAResultPerFs | null;
+};
+
+function parseDANum(s: string): number | null {
+  if (!s || s === "-") return null;
+  const cleaned = s.trim().replace(/\s/g, "");
+  const neg = /^\(.*\)$/.test(cleaned);
+  const digits = cleaned.replace(/[(),]/g, "");
+  if (!/^-?\d+(\.\d+)?$/.test(digits)) return null;
+  const n = parseFloat(digits);
+  if (isNaN(n)) return null;
+  return neg ? -n : n;
+}
+
+function parseDAFromAnnualXml(content: string, years: string[]): DAResult {
+  // 사업보고서 XML은 보통 [연결 재무제표 본문] → [연결 주석] → [개별 재무제표 본문] → [개별 주석] 순.
+  // 주석 본문의 "감가상각비 및 무형자산상각비" 통합 라벨 행은 **값이 1개**인 단일 합계로 공시됨
+  // (값이 여러 개면 대부분 세그먼트/부문별 분해 표). 단일값 행을 순서대로 수집하여 앞/뒤로 나눠
+  // 연결/개별 섹션을 구분한다. 이 접근은 연결 섹션 라벨이 없는 XML에도 강건함.
+  const trs = content.match(/<TR[^>]*>[\s\S]*?<\/TR>/gi) || [];
+  type Row = { idx: number; labelNoSp: string; nums: number[] };
+  const rows: Row[] = [];
+  for (let i = 0; i < trs.length; i++) {
+    const cells = trs[i].match(/<(?:TD|TH|TE)[^>]*>[\s\S]*?(?=<(?:TD|TH|TE)|<\/TR)/gi) || [];
+    const cleaned = cells.map((c) => c.replace(/<[^>]+>/g, "").trim().replace(/\s+/g, " "));
+    if (!cleaned.length) continue;
+    const labelNoSp = cleaned[0].replace(/\s/g, "");
+    const nums: number[] = [];
+    for (const c of cleaned.slice(1)) {
+      const n = parseDANum(c);
+      if (n !== null) nums.push(n);
+    }
+    if (nums.length) rows.push({ idx: i, labelNoSp, nums });
+  }
+
+  // 단일값(1개) + 라벨 매칭 행만 필터 — 합계값으로 해석되는 행 우선
+  function collectSingles(matcher: RegExp): Row[] {
+    return rows.filter((r) => r.nums.length === 1 && matcher.test(r.labelNoSp));
+  }
+
+  const sortedYears = [...years].sort((a, b) => parseInt(b) - parseInt(a)); // 최신 먼저
+  // 단일 행 N개를 연결(앞)/개별(뒤)로 나누고, 각각 당기/전기/전전기 순으로 years 매핑
+  function splitAndMap(
+    singles: Row[],
+    target: keyof DAResultPerFs,
+  ): { ofs: Record<string, number>; cfs: Record<string, number> } {
+    const out = { ofs: {} as Record<string, number>, cfs: {} as Record<string, number> };
+    if (!singles.length) return out;
+
+    // 발견 순서대로 나옴 → idx 오름차순 정렬
+    const sorted = [...singles].sort((a, b) => a.idx - b.idx);
+    // 짝수 개: 앞 절반=연결, 뒤 절반=개별. 홀수: 개별만 있는 것으로 간주
+    // 단, 너무 많은 중복(5개 이상)이면 연속된 2~3개를 한 섹션으로 간주
+    let cfsRows: Row[] = [];
+    let ofsRows: Row[] = [];
+    if (sorted.length === 1) {
+      ofsRows = sorted; // 단일: 개별만 있는 것으로 간주
+    } else if (sorted.length === 2) {
+      // 2개: 둘 다 당기/전기(한 섹션)일 수도, 연결/개별 각 1개(당기)일 수도.
+      // XML 내 거리가 가까우면 같은 섹션(당기+전기), 멀면 서로 다른 섹션.
+      const gap = sorted[1].idx - sorted[0].idx;
+      if (gap < 100) {
+        ofsRows = sorted; // 같은 섹션 당기/전기 — 개별로 간주(보수적)
+      } else {
+        cfsRows = [sorted[0]];
+        ofsRows = [sorted[1]];
+      }
+    } else {
+      // 3개 이상: 전체를 시간순으로 보며 큰 gap 기준 2등분
+      const gaps = sorted.slice(1).map((r, i) => ({ i: i + 1, gap: r.idx - sorted[i].idx }));
+      gaps.sort((a, b) => b.gap - a.gap);
+      const splitAt = gaps[0].i; // 가장 큰 gap 위치에서 분할
+      cfsRows = sorted.slice(0, splitAt);
+      ofsRows = sorted.slice(splitAt);
+    }
+
+    function fill(section: Row[], bucket: Record<string, number>) {
+      // section의 idx 순 = 당기 → 전기 → 전전기 순으로 가정
+      for (let i = 0; i < Math.min(section.length, sortedYears.length); i++) {
+        const v = Math.abs(section[i].nums[0]);
+        if (v > 0) bucket[sortedYears[i]] = v;
+      }
+    }
+    fill(cfsRows, out.cfs);
+    fill(ofsRows, out.ofs);
+    return out;
+  }
+
+  // 1순위: "감가상각비 및 무형자산상각비" 통합 라벨 (단일값)
+  const combined = collectSingles(/^감가상각비(및|와)무형자산상각비$/);
+  if (combined.length > 0) {
+    const m = splitAndMap(combined, "depreciation");
+    // 통합 라벨은 감가+무형 합계 → depreciation에만 넣음 (무형자산상각비는 빈 bucket)
+    const hasOfs = Object.keys(m.ofs).length > 0;
+    const hasCfs = Object.keys(m.cfs).length > 0;
+    return {
+      ofs: hasOfs ? { depreciation: m.ofs, amortization: {} } : null,
+      cfs: hasCfs ? { depreciation: m.cfs, amortization: {} } : null,
+    };
+  }
+
+  // 2순위: "감가상각비" + "무형자산상각비" 개별 합산
+  const depSingles = collectSingles(/^(감가상각비|유형자산감가상각비)$/);
+  const amortSingles = collectSingles(/^(무형자산상각비|무형자산감가상각비|사용권자산상각비)$/);
+  const depMap = splitAndMap(depSingles, "depreciation");
+  const amortMap = splitAndMap(amortSingles, "amortization");
+  const hasOfsDep = Object.keys(depMap.ofs).length > 0;
+  const hasCfsDep = Object.keys(depMap.cfs).length > 0;
+  const hasOfsAmort = Object.keys(amortMap.ofs).length > 0;
+  const hasCfsAmort = Object.keys(amortMap.cfs).length > 0;
+  return {
+    ofs: hasOfsDep || hasOfsAmort ? { depreciation: depMap.ofs, amortization: amortMap.ofs } : null,
+    cfs: hasCfsDep || hasCfsAmort ? { depreciation: depMap.cfs, amortization: amortMap.cfs } : null,
+  };
+}
+
+async function fetchAndParseOneAnnualReport(
+  apiKey: string,
+  rceptNo: string,
+  reportNm: string,
+  requestedYears: string[],
+): Promise<DAResult> {
+  const empty: DAResult = { ofs: null, cfs: null };
+  try {
+    console.log(`[DART] D&A 보강 — 사업보고서: ${reportNm} (${rceptNo})`);
+    // 보고서 당기 연도 파싱: "사업보고서 (2024.12)" → 2024
+    const curMatch = reportNm.match(/\((\d{4})[./]\d{1,2}\)/);
+    const curYear = curMatch ? parseInt(curMatch[1]) : Math.max(...requestedYears.map(Number));
+    // 해당 보고서는 당기+전기만 커버 → 요청 연도 범위와 교집합에 당기/전기만 씀
+    const coverage = [String(curYear), String(curYear - 1)].filter((y) => requestedYears.includes(y));
+    if (coverage.length === 0) return empty;
+
+    const xmlRes = await fetch(
+      `${DART_API_BASE}/document.xml?crtfc_key=${apiKey}&rcept_no=${rceptNo}`,
+      { signal: AbortSignal.timeout(20_000) },
+    );
+    const buf = Buffer.from(await xmlRes.arrayBuffer());
+    if (buf[0] !== 0x50 || buf[1] !== 0x4B) return empty;
+    const zip = await JSZip.loadAsync(buf);
+    const mainName =
+      Object.keys(zip.files).find((n) => !zip.files[n].dir && n.endsWith(".xml") && !/_\d+\.xml$/.test(n)) ||
+      Object.keys(zip.files).find((n) => !zip.files[n].dir && n.endsWith(".xml"));
+    if (!mainName) return empty;
+    const content = await zip.files[mainName].async("string");
+    // coverage 연도(내림차순)를 years로 넘겨 vals[0]=당기, vals[1]=전기로 정확히 매핑
+    return parseDAFromAnnualXml(content, coverage);
+  } catch (e) {
+    console.warn(`[DART] 사업보고서 ${rceptNo} 파싱 실패:`, e instanceof Error ? e.message : e);
+    return empty;
+  }
+}
+
+async function extractDAFromAnnualReport(corpCode: string, years: string[]): Promise<DAResult> {
+  const apiKey = getApiKey();
+  const empty: DAResult = { ofs: null, cfs: null };
+  try {
+    const minYear = Math.min(...years.map(Number));
+    const listParams = new URLSearchParams({
+      crtfc_key: apiKey,
+      corp_code: corpCode,
+      bgn_de: `${minYear - 1}0101`,
+      end_de: "20261231",
+      pblntf_ty: "A",
+      page_count: "30",
+    });
+    const listRes = await fetch(`${DART_API_BASE}/list.json?${listParams}`, { signal: AbortSignal.timeout(10_000) });
+    const listJson = await listRes.json();
+    const reports: { rcept_no: string; report_nm: string }[] = (listJson.list || []).filter(
+      (it: any) => /사업보고서/.test(it.report_nm) && !/기재정정/.test(it.report_nm),
+    );
+    if (!reports.length) return empty;
+
+    // 최신 사업보고서는 당기+전기 2년 D&A 제공. 3년 이상 요청 시 이전 해 사업보고서도 병렬 fetch
+    // (years=['2023','2024','2025'] → 최신=2025보고서(당기2025+전기2024), 전전기는 2024보고서(당기2024+전기2023))
+    const yearsToCover = [...new Set(years)];
+    const sortedYearsDesc = [...yearsToCover].sort((a, b) => parseInt(b) - parseInt(a));
+    // 필요한 보고서 개수 = ceil(years / 2) — 각 보고서가 2년 커버
+    const needed = Math.min(Math.ceil(yearsToCover.length / 2), reports.length);
+    const selected = reports.slice(0, needed);
+    console.log(`[DART] D&A 보강 — 사업보고서 ${selected.length}건 병렬 파싱`);
+
+    const parsed = await Promise.all(
+      selected.map((r) => fetchAndParseOneAnnualReport(apiKey, r.rcept_no, r.report_nm, years)),
+    );
+
+    // 여러 보고서의 결과 병합: 앞 보고서(최신) 값이 우선, 뒤 보고서는 비어있는 연도만 채움
+    const merged: DAResult = { ofs: null, cfs: null };
+    for (const r of parsed) {
+      for (const k of ["ofs", "cfs"] as const) {
+        if (!r[k]) continue;
+        if (!merged[k]) merged[k] = { depreciation: {}, amortization: {} };
+        for (const field of ["depreciation", "amortization"] as const) {
+          for (const [yr, v] of Object.entries(r[k]![field])) {
+            if (merged[k]![field][yr] === undefined) merged[k]![field][yr] = v;
+          }
+        }
+      }
+    }
+    if (merged.ofs) console.log(`[DART] D&A 개별 병합: 감가 ${JSON.stringify(merged.ofs.depreciation)}, 무형 ${JSON.stringify(merged.ofs.amortization)}`);
+    if (merged.cfs) console.log(`[DART] D&A 연결 병합: 감가 ${JSON.stringify(merged.cfs.depreciation)}, 무형 ${JSON.stringify(merged.cfs.amortization)}`);
+    return merged;
+  } catch (e) {
+    console.warn(`[DART] extractDAFromAnnualReport 실패:`, e instanceof Error ? e.message : e);
+    return empty;
+  }
+}
+
+function hasCfDepreciationRows(cfRows: FinancialRow[]): boolean {
+  return cfRows.some((r) => {
+    const n = (r.account || "").replace(/\s/g, "");
+    return /감가상각|유형자산감가|사용권자산상각|무형자산상각|무형자산감가/.test(n);
+  });
+}
+
+function mergeDAIntoCfRows(
+  cfRows: FinancialRow[],
+  da: DAResultPerFs | null,
+  displayYears: string[],
+  origYears: string[],
+): FinancialRow[] {
+  if (!da) return cfRows;
+  const mapY: Record<string, string> = {};
+  for (let i = 0; i < origYears.length; i++) mapY[origYears[i]] = displayYears[i];
+  function toRow(account: string, bucket: Record<string, number>): FinancialRow | null {
+    if (Object.keys(bucket).length === 0) return null;
+    const row: FinancialRow = { account };
+    for (const [y, v] of Object.entries(bucket)) {
+      row[mapY[y] || y] = String(Math.round(v));
+    }
+    return row;
+  }
+  const merged = [...cfRows];
+  const depRow = toRow("감가상각비", da.depreciation);
+  const amortRow = toRow("무형자산상각비", da.amortization);
+  if (depRow) merged.push(depRow);
+  if (amortRow) merged.push(amortRow);
+  return merged;
+}
+
+// ============================================================
 // 메인: 3단계 fallback
 // ============================================================
 
@@ -1847,6 +2099,24 @@ export async function buildFinancialData(
   }
 
   if (gotFull) {
+    // ── CF 조정항목(감가상각비/무형자산상각비) 보강 ──
+    // Stage 1/2의 fnlttSinglAcntAll API는 영업활동 최상위 항목만 반환.
+    // 조정항목 누락 시 EBITDA가 영업이익만 반영 → 사업보고서 XML 주석에서 보강
+    const needOfsDa = result.hasOfs && !hasCfDepreciationRows(result.cfItems);
+    const needCfsDa = result.hasCfs && !hasCfDepreciationRows(result.cfItemsCfs);
+    if (needOfsDa || needCfsDa) {
+      console.log(`[DART] CF 조정항목 누락 감지 (개별=${needOfsDa}, 연결=${needCfsDa}) → 사업보고서 XML 보강 시도`);
+      const da = await extractDAFromAnnualReport(corpCode, years);
+      if (needOfsDa && da.ofs) {
+        result.cfItems = mergeDAIntoCfRows(result.cfItems, da.ofs, result.years, years);
+        result.ratios = calcRatios(result.bsItems, result.isItems, result.years, result.cfItems);
+      }
+      if (needCfsDa && da.cfs) {
+        result.cfItemsCfs = mergeDAIntoCfRows(result.cfItemsCfs, da.cfs, result.years, years);
+        result.ratiosCfs = calcRatios(result.bsItemsCfs, result.isItemsCfs, result.years, result.cfItemsCfs);
+      }
+    }
+
     result.hasData = true;
     result.source = "DART Open API (금융감독원 전자공시시스템)";
     return result;
