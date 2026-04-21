@@ -135,8 +135,10 @@ output: 신청서 양식 Excel (감수의견 시트 포함) + findings JSON
 | `NICE_CLIENT_ID` | NICE BizLine 클라이언트 ID |
 | `NICE_CLIENT_SECRET` | NICE BizLine 시크릿 |
 | `FISIS_AUTH_KEY` | FISIS 금융통계 인증키 (선택) |
-| `FIREBASE_SERVICE_ACCOUNT_KEY` | Firebase 서비스 계정 JSON |
-| `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` | Cloud Storage 버킷명 |
+| `FIREBASE_SERVICE_ACCOUNT_KEY` | Firebase 서비스 계정 JSON (서버 Admin SDK — 필수) |
+| `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` | Cloud Storage 버킷명 (서버 Admin SDK에서만 참조) |
+
+> **Firestore 접근 경로**: 모든 읽기/쓰기는 서버사이드 `firebase-admin.ts` 경유. 클라이언트 Firebase SDK는 사용하지 않으며, Firestore 보안 규칙은 `allow read, write: if false` 전면 차단 상태입니다. Admin SDK는 서비스 계정 IAM으로 인증되어 규칙을 우회하므로 서버 API는 정상 동작합니다.
 
 > API 키 발급: [DART](https://opendart.fss.or.kr), [NICE BizLine](https://www.nicebizline.com), [FISIS](https://fisis.fss.or.kr)
 
@@ -164,6 +166,18 @@ cd app && npm run dev
 #   fields: appraisalFiles, feasibilityFiles(선택), propertyType(auto|apartment-pf|industrial-center|land-pf)
 # 로컬 E2E: node --experimental-strip-types --no-warnings test-appraisal-e2e.mjs
 ```
+
+### 프로덕션 배포
+```bash
+cd app && ./scripts/deploy.sh
+```
+`app/scripts/deploy.sh`가 유일한 지원 경로. 주요 특징:
+- `app/src/` → `loan-app-next/src/` 전체 동기화 (rsync, Git Bash/Windows는 `robocopy /MIR` fallback)
+- `npx vercel --prod` 실행 → Ready 상태 폴링 (`vercel ls --prod 2>&1` stdout+stderr 병합 파싱)
+- HTTP 라우트 헬스체크 (`/login` 200, `/financial` `/appraisal` `/` 307)
+- 실패 시 이전 Ready 배포로 alias 자동 롤백 (`loan-app-next/.last-ready-deploy.txt`)
+
+수동 `cp`로 부분 복사 금지 — 파일 세트 불일치로 라우트 404 발생 가능 (2026-04-20 장애 사례).
 
 ## 작업 컨텍스트 (Claude용)
 > 이 섹션은 Claude Code가 프로젝트를 이어받을 때 참조하는 구간입니다.
@@ -275,6 +289,11 @@ Track A(웹앱)는 범용 재무데이터 조회 도구이고, Track B(신청서
 - **[2026-04-20] 감수 에이전트 false positive 방지**: 데이터 누락(추출 실패) vs 실제 위반을 `missingFields: string[]`로 구분. 누락은 INFO, 위반은 ERROR/WARNING
 - **[2026-04-20] Partial→Complete 어댑터 패턴**: 파서는 부분 결과만 반환, 어댑터에서 `EMPTY_*` 기본값 + spread + derived value(예: collateralDetail에서 totalArea 도출)로 정규화
 - **[2026-04-20] 통계 도구**: IQR 기반 이상치 검출, CV(변동계수 = stddev/mean)로 상대편차 판단, 규모별 분류(50/300/1000억 임계)는 대형 PF 위험 분류에 실용적
+- **[2026-04-21] Firestore 테스트 규칙 만료 대응**: Firebase Console 테스트 모드는 30일 후 `fail-closed`로 전환. 프로덕션이 서버 Admin SDK만 사용한다면 `allow read, write: if false` 전면 차단이 가장 단순하고 안전 — Admin SDK는 서비스 계정 IAM 인증이라 Firestore 보안 규칙을 우회. 클라이언트 SDK 쓰레기(dead code) 제거와 병행 권장
+- **[2026-04-21] Git Bash(Windows) deploy.sh 크로스플랫폼**: (1) rsync 미제공 → `command -v rsync` 체크 후 PowerShell `robocopy /MIR` fallback + `cygpath -w`로 Unix→Windows 경로 변환. (2) robocopy exit 1~7은 성공(복사 완료) 의미 — `>= 8`만 실패로 처리. (3) `vercel ls --prod`는 stdout=URL만 / stderr=Ready 상태 테이블 분리 → 상태 파싱 시 `2>&1` 병합 필수
+- **[2026-04-21] 서비스 계정 키 노출 감사**: `.gitignore`에 `*firebase-adminsdk*.json` + `*-firebase-*.json` 이중 패턴으로 Console 기본 파일명 + 변형 모두 커버. 검증은 `git log --all --full-history -- "*firebase*"` 0건 확인 + `git log --all --full-history -p | grep "BEGIN PRIVATE KEY"`로 key 본문 누출 여부까지 이중 체크
+- **[2026-04-21] Zero-import dead code 감지**: ES 모듈은 `grep -rEl "from ['\"].*lib/firebase['\"]"` 같은 static import 0건 확인으로 안전 삭제 가능. 전제 조건: (a) 동적 import 없음, (b) 문자열 기반 모듈 해석 없음, (c) 재-export 체인 없음
+- **[2026-04-21] gitignored deploy.sh 3중 divergence**: `.gitignore`의 `deploy.sh` (파일명만, 경로 앵커 없음) 규칙이 `app/scripts/deploy.sh`, `scripts/deploy.sh`, 루트 `deploy.sh` 3곳 모두에 매칭되어 세 파일이 모두 untracked + 서로 다르게 발산. 로컬 전용 의도 유지하되 공유가 필요하면 `deploy.sh.example`만 git에 포함하는 패턴 권장
 
 ## 버전 이력
 

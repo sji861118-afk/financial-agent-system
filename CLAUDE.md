@@ -27,10 +27,11 @@
 ## 개발 워크플로우
 - main 브랜치에서 작업, 커밋 후 push
 - DART 파싱 코드 수정 시 반드시 실제 기업 데이터로 테스트 후 배포
-- **배포 = 수동 Vercel 배포**: app/ 수정 → loan-app-next에 복사 → `cd loan-app-next && npx vercel --prod`
+- **배포는 반드시 `app/scripts/deploy.sh` 사용** (수동 `cp` 금지)
+  - `app/` → `loan-app-next/` 전체 rsync 동기화 → `npx vercel --prod` → Ready 대기 → **HTTP 라우트 헬스체크** → 실패 시 **이전 Ready 배포로 alias 자동 롤백**
   - loan-app-next/는 .gitignore에 포함 → git push로 자동 배포 안 됨
   - Vercel 프로젝트명: `loan-app-next` / 프로덕션 도메인: `ok-cf1.vercel.app`
-- **배포 후 반드시 `npx vercel ls`로 `● Ready` 확인** — 확인 전 "배포 완료"라고 말하지 않기
+- **`● Ready`만 확인하고 "배포 완료" 선언 금지** — 반드시 `/login`, `/financial`, `/appraisal` 라우트 HTTP 응답까지 확인 (deploy.sh가 자동 수행)
 - **피드백 루프**: ok-cf1.vercel.app/feedback 페이지에서 사용자 피드백 확인 → 수정 → 배포
 
 ## Development Rules
@@ -78,6 +79,7 @@
 - [2026-04-16] **fetchFinancialItems 타임아웃 12초→20초**: Vercel US↔DART Korea 간 레이턴시 고려. 12초 타임아웃은 CFS 호출 실패의 원인
 - [2026-04-16] **최신 보고서 기준 원칙**: 기업은 정정공시를 통해 최신 보고서(2025년)에 과거연도(2023년) 수치를 수정 반영함. 따라서 2023년 데이터는 2023년 자체 보고서의 thstrm이 아니라, 2025년 보고서의 bfefrmtrm을 사용해야 정확. `buildStatements`에서 가장 최근 보고서(reverse sort 먼저 처리)의 데이터가 우선되도록 변경 — `yearData[dataYear]`가 이미 채워져 있으면 이전 보고서로 덮어쓰지 않음
 - [2026-04-16] **비상장 외감법인(corp_cls=E)도 fnlttSinglAcntAll 데이터 있을 수 있음** — 교보생명보험 등. 비상장이라고 무조건 Stage 1/2 스킵하면 안 됨. 항상 시도 후 실패 시 Stage 3 fallback
+- [2026-04-16] **재무비율 null/미추출 값은 0 표기 필수** — `-`로 표시하면 Excel 수식이나 재무비율 계산 시 오류 발생. D&A 등 미추출 항목은 `-`가 아닌 `0`으로 표기해야 계산 연속성 유지
 - [2026-04-16] **BS 정렬**: DART API ord 필드가 부정확한 기업이 많음. `classifyBsSectionByName()` + `reorderBsAccounts()`로 자산→부채→자본 섹션 재정렬 필수
 - [2026-04-16] **감사보고서 XML CF 파싱**: parseOneAuditXml에서 BS/IS 이후 `현금흐름표` 키워드 감지 → cf 섹션 진입. `영업활동`, `투자활동`, `재무활동` 항목 추출. `기말의현금` 행 이후 종료
 - [2026-04-16] **감사보고서 주석 추출**: 감사보고서(F-type) 없으면 사업보고서(A-type) fallback. ZIP 내 여러 XML 파일 중 주석이 가장 많은 파일 선택. `별첨 주석` 또는 `재무제표에 대한 주석` 이후만 파싱
@@ -85,6 +87,12 @@
 - [2026-04-16] **Excel 셀 수식**: ExcelJS에서 `{ formula: "=B5/B10*100" }` 형태로 설정. 크로스시트 참조는 `'시트명'!B5` 형태. 0으로 나누기 방지: `IF(B10=0,"-",B5/B10*100)`
 - [2026-04-16] **회계 감수 에이전트**: Excel 생성 전 BS 등식, IS 논리, BS 항목 분류, 필수 계정 누락, 비율 이상치 등 자동 검증. 결과를 API 응답에 포함
 - [2026-04-16] **BS 분류 일반 규칙**: 키워드 목록 매칭 실패 시 계정명에 "부채" 포함되면 부채로 분류. "당기손익-공정가치측정금융부채" 같은 비표준 계정명 누락 방지. 감수 에이전트에서도 자산 영역에 부채 계정 배치 시 ERROR 감지
+- [2026-04-20] **Vercel `● Ready` ≠ 실제 서비스 정상**: 3d 전 배포(dqgdzmgs8/69vje088h)가 Ready 상태로 표시됐으나 모든 보호 라우트(/financial, /appraisal, /review, /admin, /feedback)가 404 반환. /login만 200, 루트는 307 정상. 원인 추정: 감정평가서 작업 중 app/→loan-app-next 부분 수동 복사로 파일 세트 불일치 → 빌드 산출물에서 페이지 라우트 일부 누락. 복구는 이전 Ready 배포(gx1g2n3u4, 4d 전)로 alias 복원. **재발 방지**: (1) `app/scripts/deploy.sh`로만 배포 (rsync --delete로 완전 동기화), (2) 배포 후 라우트 HTTP 헬스체크 필수 — `/login(200)`, `/financial(307)`, `/appraisal(307)`, `/(307)`, (3) 헬스체크 실패 시 이전 Ready URL(`loan-app-next/.last-ready-deploy.txt` 저장)로 alias 자동 롤백
+- [2026-04-21] **Firestore 테스트 모드 만료 → Admin-SDK-only 락다운**: 2026-04-22 만료 대응으로 `allow read, write: if false` 전면 차단 규칙 게시. 이 프로젝트는 **클라이언트 Firebase SDK 미사용**(모든 접근이 서버 `firebase-admin.ts` 경유) → Admin SDK가 서비스 계정 IAM으로 Firestore Rules 우회하므로 서비스 영향 0. 확인: `/api/dart/health` allOk:true. Firestore 규칙은 `firestore.rules` 파일로 git 추적됨 — Firebase Console 직접 편집 금지, `app/scripts/firebase-rules.sh` 경유 배포
+- [2026-04-21] **Git Bash(Windows)에 rsync 없음**: MSYS2 기본 패키지가 아님. deploy.sh에 `command -v rsync` 체크 + PowerShell `robocopy /MIR` fallback 추가 (+ `cygpath -w` Unix→Windows 경로 변환). **robocopy exit 1~7은 성공** (파일 복사됨), `>= 8`만 실패. 이거 모르면 정상 복사인데 파이프라인이 실패로 인식
+- [2026-04-21] **Vercel CLI stdout/stderr 분리 파싱**: `vercel ls --prod`는 stdout=URL 목록만, stderr=Ready 상태 테이블. 이전 파서 `head -5 | grep '● Ready'` → stdout의 URL만 보고 상태 못 찾아 Ready를 Unknown으로 오탐 → 실제 성공한 배포를 롤백 시도. fix: `2>&1` 병합 + `grep -oE '● [A-Za-z]+' | head -1`
+- [2026-04-21] **서비스 계정 키 감사 명령**: `git log --all --full-history -- "*firebase*"` (파일 단위) + `git log --all --full-history -p | grep "BEGIN PRIVATE KEY"` (본문 단위) 이중 체크. `.gitignore` 패턴은 `*firebase-adminsdk*.json` + `*-firebase-*.json` 이중(Console 기본명 + 변형 모두 커버). `.claude/settings.json`의 PreToolUse hook이 credential 패턴 포함 staged 파일을 commit 차단
+- [2026-04-21] **Dead code 삭제 heuristic**: ES 모듈은 `grep -rEl "from ['\"].*<module>['\"]"` 0건이면 안전 삭제. 단 (a) 동적 import 없음, (b) 문자열 기반 resolution 없음, (c) re-export 체인 없음 전제. `app/src/lib/firebase.ts` 제거 사례 — 1개월간 import 0건으로 남아있던 dead code
 
 ## Current Progress
 ### 완료 (2026-03-26)
@@ -250,16 +258,24 @@
 
 ## 배포 방법 (중요)
 ```bash
-# 1. app/ 수정사항을 loan-app-next에 복사
-cp app/src/변경파일 loan-app-next/src/변경파일
-
-# 2. 메인 레포 커밋 + push (Vercel 자동 배포 안 됨 — loan-app-next는 .gitignore)
+# 1. 메인 레포 커밋 + push (소스 히스토리 보존)
 cd /c/Users/OK/Documents/AI개발/1.신청서\ 관련
-git add app/변경파일 && git commit && git push
+git add <변경파일> && git commit && git push
 
-# 3. loan-app-next에서 수동 Vercel 배포
-cd loan-app-next && npx vercel --prod
-
-# 4. 배포 확인
-npx vercel ls  # ● Ready 확인 필수
+# 2. 자동 배포 — deploy.sh가 다음을 순차 수행:
+#    (a) 현재 Ready 배포 URL 백업 (loan-app-next/.last-ready-deploy.txt)
+#    (b) app/src → loan-app-next/src 전체 rsync 동기화 (--delete)
+#    (c) npx vercel --prod
+#    (d) Ready 대기 (최대 120초)
+#    (e) 라우트 HTTP 헬스체크 — /login(200), /financial(307), /appraisal(307), /(307)
+#    (f) 실패 시 이전 Ready 배포로 alias 자동 롤백
+cd app && ./scripts/deploy.sh
 ```
+
+**금지 사항**:
+- 수동 `cp`로 부분 복사 (파일 세트 불일치 → 라우트 누락 가능)
+- `● Ready`만 확인하고 배포 완료 선언 (Ready여도 라우트 404 가능)
+
+**수동 개입이 필요한 경우**:
+- deploy.sh 헬스체크 실패 → 자동 롤백됨. `npx vercel ls`에서 에러 배포 URL 확보 후 `npx vercel inspect <url> --logs`로 빌드 로그 확인
+- 롤백 대상이 없을 때 (`.last-ready-deploy.txt` 없음) → `npx vercel ls`에서 직전 Ready URL 수동 확인 후 `npx vercel alias set <url> ok-cf1.vercel.app`
