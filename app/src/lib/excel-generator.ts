@@ -854,10 +854,12 @@ function createFinancialSheet(
       let totalBorrRow = 0;
 
       const bsCfg: RatioCfg[] = [
+        // borrowRows 셀에 "-" 텍스트가 들어가면 SUM이 #VALUE! → 각 셀을 IFERROR로 감싸 0으로 처리.
+        // REIT 등 일부 회사는 연도별 차입금 reclassify로 특정 연도 셀이 빈/텍스트
         { name: "총차입금", desc: "차입금 관련 계정 합계", fmt: "#,##0",
-          formula: (c) => borrowRows.length > 0 ? `=${borrowRows.map(r => `${c}${r}`).join("+")}` : null },
+          formula: (c) => borrowRows.length > 0 ? `=${borrowRows.map(r => `IFERROR(${c}${r},0)`).join("+")}` : null },
         { name: "순차입금", desc: "총차입금 - 현금및현금성자산", fmt: "#,##0",
-          formula: (c) => rCash ? `=${c}${row}-${c}${rCash}` : null }, // row = 총차입금 행 (이 시점)
+          formula: (c) => rCash ? `=${c}${row}-IFERROR(${c}${rCash},0)` : null }, // row = 총차입금 행 (이 시점)
         { name: "부채비율", desc: "(부채총계/자본총계)×100", fmt: '0.0"%"',
           formula: (c) => rDebt && rEquity ? `=IF(${c}${rEquity}=0,"-",${c}${rDebt}/${c}${rEquity}*100)` : null },
         { name: "유동비율", desc: "(유동자산/유동부채)×100", fmt: '0.0"%"',
@@ -940,6 +942,11 @@ function createFinancialSheet(
       }
       const cfRef = cfSheetName ? `'${cfSheetName}'!` : "";
 
+      // IS 시트 내부에서도 감가/무형 행 검색 (REIT처럼 CF 시트가 없는 회사 fallback)
+      // findRow는 IS 시트 acctRowMap을 사용 — 같은 시트 안의 행 번호 반환 (sheet 참조 prefix 불필요)
+      const rDeprIS = findRow("감가상각비", "감가상각비용");
+      const rAmortIS = findRow("무형자산상각비", "무형자산감가상각비", "사용권자산상각비");
+
       // 이자비용 셀 참조 빌더: IS "이자비용" > CF "이자지급/이자납부" > IS "금융비용"
       // formula 문자열 형태로 반환 (예: `'7.현금흐름표(연결)'!B30` 또는 `B11`)
       function interestRef(c: string): string | null {
@@ -963,8 +970,14 @@ function createFinancialSheet(
           formula: (c) => {
             if (!rOpIncome) return null;
             let f = `=${c}${rOpIncome}`;
-            if (cfDeprRow) f += `+ABS(${cfRef}${c}${cfDeprRow})`;
-            if (cfAmortRow) f += `+ABS(${cfRef}${c}${cfAmortRow})`;
+            // 우선순위 1: CF 통합/분리 행 (보강된 데이터)
+            if (cfDeprRow) f += `+IFERROR(ABS(${cfRef}${c}${cfDeprRow}),0)`;
+            if (cfAmortRow) f += `+IFERROR(ABS(${cfRef}${c}${cfAmortRow}),0)`;
+            // 우선순위 2: CF에 행이 없을 때만 IS 시트 내부 감가/무형 fallback (REIT 등 CF 미존재 회사용)
+            if (!cfDeprRow && !cfAmortRow) {
+              if (rDeprIS) f += `+IFERROR(ABS(${c}${rDeprIS}),0)`;
+              if (rAmortIS) f += `+IFERROR(ABS(${c}${rAmortIS}),0)`;
+            }
             return f;
           }},
         { name: "EBITDA/이자비용", desc: "EBITDA/|이자비용|", fmt: '0.0"배"',
