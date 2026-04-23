@@ -854,12 +854,14 @@ function createFinancialSheet(
       let totalBorrRow = 0;
 
       const bsCfg: RatioCfg[] = [
-        // borrowRows 셀에 "-" 텍스트가 들어가면 SUM이 #VALUE! → 각 셀을 IFERROR로 감싸 0으로 처리.
+        // borrowRows 셀에 "-" 텍스트가 들어가면 SUM이 #VALUE! → 텍스트→숫자 강제 변환 후 0 fallback.
+        // IFERROR(셀,0)은 에러일 때만 발동하므로 "-" 텍스트는 통과 → SUM 깨짐.
+        // IFERROR(셀*1,0)은 텍스트*1 = #VALUE! 에러 발생 → IFERROR 정상 발동 → 0
         // REIT 등 일부 회사는 연도별 차입금 reclassify로 특정 연도 셀이 빈/텍스트
         { name: "총차입금", desc: "차입금 관련 계정 합계", fmt: "#,##0",
-          formula: (c) => borrowRows.length > 0 ? `=${borrowRows.map(r => `IFERROR(${c}${r},0)`).join("+")}` : null },
+          formula: (c) => borrowRows.length > 0 ? `=${borrowRows.map(r => `IFERROR(${c}${r}*1,0)`).join("+")}` : null },
         { name: "순차입금", desc: "총차입금 - 현금및현금성자산", fmt: "#,##0",
-          formula: (c) => rCash ? `=${c}${row}-IFERROR(${c}${rCash},0)` : null }, // row = 총차입금 행 (이 시점)
+          formula: (c) => rCash ? `=${c}${row}-IFERROR(${c}${rCash}*1,0)` : null }, // row = 총차입금 행 (이 시점)
         { name: "부채비율", desc: "(부채총계/자본총계)×100", fmt: '0.0"%"',
           formula: (c) => rDebt && rEquity ? `=IF(${c}${rEquity}=0,"-",${c}${rDebt}/${c}${rEquity}*100)` : null },
         { name: "유동비율", desc: "(유동자산/유동부채)×100", fmt: '0.0"%"',
@@ -872,9 +874,9 @@ function createFinancialSheet(
 
       // 총차입금/순차입금 행 번호 미리 계산
       totalBorrRow = row; // 총차입금이 첫 번째 비율 행
-      // 순차입금의 formula에서 총차입금 행 참조 수정
-      bsCfg[1].formula = (c) => rCash ? `=${c}${totalBorrRow}-${c}${rCash}` : null;
-      // 차입금의존도: 총차입금행/자산총계행*100
+      // 순차입금의 formula에서 총차입금 행 참조 수정 — rCash 셀이 텍스트(-)일 수 있어 *1 강제 변환
+      bsCfg[1].formula = (c) => rCash ? `=${c}${totalBorrRow}-IFERROR(${c}${rCash}*1,0)` : null;
+      // 차입금의존도: 총차입금행/자산총계행*100 — rAssets가 0일 때만 "-"
       bsCfg[5].formula = (c) => rAssets ? `=IF(${c}${rAssets}=0,"-",${c}${totalBorrRow}/${c}${rAssets}*100)` : null;
 
       renderRatioRows(bsCfg);
@@ -969,14 +971,15 @@ function createFinancialSheet(
         { name: "EBITDA", desc: "영업이익+감가상각비+무형자산상각비", fmt: "#,##0",
           formula: (c) => {
             if (!rOpIncome) return null;
-            let f = `=${c}${rOpIncome}`;
+            // rOpIncome 셀도 텍스트(-)일 수 있어 *1 강제 변환
+            let f = `=IFERROR(${c}${rOpIncome}*1,0)`;
             // 우선순위 1: CF 통합/분리 행 (보강된 데이터)
-            if (cfDeprRow) f += `+IFERROR(ABS(${cfRef}${c}${cfDeprRow}),0)`;
-            if (cfAmortRow) f += `+IFERROR(ABS(${cfRef}${c}${cfAmortRow}),0)`;
+            if (cfDeprRow) f += `+IFERROR(ABS(${cfRef}${c}${cfDeprRow}*1),0)`;
+            if (cfAmortRow) f += `+IFERROR(ABS(${cfRef}${c}${cfAmortRow}*1),0)`;
             // 우선순위 2: CF에 행이 없을 때만 IS 시트 내부 감가/무형 fallback (REIT 등 CF 미존재 회사용)
             if (!cfDeprRow && !cfAmortRow) {
-              if (rDeprIS) f += `+IFERROR(ABS(${c}${rDeprIS}),0)`;
-              if (rAmortIS) f += `+IFERROR(ABS(${c}${rAmortIS}),0)`;
+              if (rDeprIS) f += `+IFERROR(ABS(${c}${rDeprIS}*1),0)`;
+              if (rAmortIS) f += `+IFERROR(ABS(${c}${rAmortIS}*1),0)`;
             }
             return f;
           }},
