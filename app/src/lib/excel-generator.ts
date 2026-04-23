@@ -912,18 +912,30 @@ function createFinancialSheet(
       const cfSheetName = cfSheetNameHint ?? wb.worksheets.find(s =>
         s.name.includes("현금흐름표") && s.name.includes(fsDiv === "OFS" ? "개별" : "연결")
       )?.name;
-      let cfDeprRow = 0, cfAmortRow = 0, cfInterestPayRow = 0;
+      let cfDeprRow = 0, cfAmortRow = 0, cfInterestPayRow = 0, cfCombinedDARow = 0;
       if (cfData && cfData.length > 0) {
         for (let i = 0; i < cfData.length; i++) {
-          const v = String(cfData[i].account || "").replace(/\s/g, "");
+          const acctRaw = String(cfData[i].account || "");
+          const v = acctRaw.replace(/\s/g, "");
           const rn = i + 3; // CF 시트의 데이터 행 번호 (title=1, header=2, items=3+)
+          // (참고) 행은 정보용 — EBITDA 합산에서 제외
+          if (/\(참고\)/.test(acctRaw)) continue;
+          // 통합 라벨 우선 — 잡히면 cfCombinedDARow에 기록 (감가/무형 별도 행 매칭은 skip)
+          if (!cfCombinedDARow && /감가상각비(및|와)무형자산상각비/.test(v)) {
+            cfCombinedDARow = rn;
+            continue;
+          }
           if (!cfDeprRow && (v.includes("감가상각비") || v.includes("유형자산감가상각비"))) cfDeprRow = rn;
           if (!cfAmortRow && (v.includes("무형자산상각비") || v.includes("사용권자산상각비"))) cfAmortRow = rn;
-          // CF의 이자지급/이자납부는 실제 이자비용에 가까움 (단, 이자수취/이자수익은 제외)
           if (!cfInterestPayRow &&
               (v === "이자지급" || v === "이자납부" || v === "이자의지급" || v.endsWith("이자지급") || v.endsWith("이자납부"))) {
             cfInterestPayRow = rn;
           }
+        }
+        // 통합 행이 있으면 분리 행은 무시 (이중 합산 방지)
+        if (cfCombinedDARow) {
+          cfDeprRow = cfCombinedDARow;
+          cfAmortRow = 0;
         }
       }
       const cfRef = cfSheetName ? `'${cfSheetName}'!` : "";

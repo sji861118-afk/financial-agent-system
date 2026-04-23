@@ -936,11 +936,17 @@ function calcRatios(
     let depreciation = 0;
     let amortization = 0;
     if (cfRows.length > 0) {
-      depreciation = get(cfRows, ["감가상각비", "감가상각비용", "유형자산감가상각비"], year);
-      amortization = get(cfRows, ["무형자산상각비", "무형자산감가상각비", "사용권자산상각비", "사용권자산감가상각비"], year);
-      // CF에서 음수로 표시되는 경우 절대값 사용 (비현금 조정항목은 양수가 정상)
-      depreciation = Math.abs(depreciation);
-      amortization = Math.abs(amortization);
+      // (참고) 라벨 행은 가시성 목적이므로 EBITDA 계산에서 제외
+      const cfRowsForCalc = cfRows.filter(r => !/\(참고\)/.test(r.account || ""));
+      // 우선순위 1: "감가상각비 및 무형자산상각비" 통합 라벨이 있으면 그것만 사용 (이중합산 회피)
+      const combinedDA = Math.abs(get(cfRowsForCalc, ["감가상각비및무형자산상각비"], year));
+      if (combinedDA > 0) {
+        depreciation = combinedDA;
+        // 통합값에 무형이 이미 포함되므로 amortization은 0
+      } else {
+        depreciation = Math.abs(get(cfRowsForCalc, ["감가상각비", "감가상각비용", "유형자산감가상각비"], year));
+        amortization = Math.abs(get(cfRowsForCalc, ["무형자산상각비", "무형자산감가상각비", "사용권자산상각비", "사용권자산감가상각비"], year));
+      }
     }
     // CF에서 못 찾으면 IS → BS fallback
     if (depreciation === 0) {
@@ -1706,6 +1712,12 @@ async function fetchAuditReportData(
 type DAResultPerFs = {
   depreciation: Record<string, number>;
   amortization: Record<string, number>;
+  // 1순위 통합값 — "감가상각비 및 무형자산상각비" 단일 합계.
+  // 통합값은 분리값 합보다 보통 큼(사용권자산상각비 등 추가 포함). EBITDA 산정 시 우선 사용.
+  combined?: Record<string, number>;
+  // 2순위 분리값(참고용) — 통합값과 별개로 동시에 추출되면 가시성 위해 따로 push
+  refDepreciation?: Record<string, number>;
+  refAmortization?: Record<string, number>;
 };
 
 type DAResult = {
@@ -1798,32 +1810,39 @@ function parseDAFromAnnualXml(content: string, years: string[]): DAResult {
     return out;
   }
 
-  // 1순위: "감가상각비 및 무형자산상각비" 통합 라벨 (단일값)
+  // 1순위 통합 라벨 + 2순위 분리 라벨 모두 수집 (둘 다 있으면 함께 반환 — 통합값이 EBITDA 진실, 분리값은 가시성)
   const combined = collectSingles(/^감가상각비(및|와)무형자산상각비$/);
-  if (combined.length > 0) {
-    const m = splitAndMap(combined, "depreciation");
-    // 통합 라벨은 감가+무형 합계 → depreciation에만 넣음 (무형자산상각비는 빈 bucket)
-    const hasOfs = Object.keys(m.ofs).length > 0;
-    const hasCfs = Object.keys(m.cfs).length > 0;
-    return {
-      ofs: hasOfs ? { depreciation: m.ofs, amortization: {} } : null,
-      cfs: hasCfs ? { depreciation: m.cfs, amortization: {} } : null,
-    };
-  }
-
-  // 2순위: "감가상각비" + "무형자산상각비" 개별 합산
   const depSingles = collectSingles(/^(감가상각비|유형자산감가상각비)$/);
   const amortSingles = collectSingles(/^(무형자산상각비|무형자산감가상각비|사용권자산상각비)$/);
+
+  const combinedMap = combined.length > 0 ? splitAndMap(combined, "depreciation") : { ofs: {}, cfs: {} };
   const depMap = splitAndMap(depSingles, "depreciation");
   const amortMap = splitAndMap(amortSingles, "amortization");
-  const hasOfsDep = Object.keys(depMap.ofs).length > 0;
-  const hasCfsDep = Object.keys(depMap.cfs).length > 0;
-  const hasOfsAmort = Object.keys(amortMap.ofs).length > 0;
-  const hasCfsAmort = Object.keys(amortMap.cfs).length > 0;
-  return {
-    ofs: hasOfsDep || hasOfsAmort ? { depreciation: depMap.ofs, amortization: amortMap.ofs } : null,
-    cfs: hasCfsDep || hasCfsAmort ? { depreciation: depMap.cfs, amortization: amortMap.cfs } : null,
-  };
+
+  function build(side: "ofs" | "cfs"): DAResultPerFs | null {
+    const cb = combinedMap[side];
+    const dp = depMap[side];
+    const am = amortMap[side];
+    const hasCb = Object.keys(cb).length > 0;
+    const hasDp = Object.keys(dp).length > 0;
+    const hasAm = Object.keys(am).length > 0;
+    if (!hasCb && !hasDp && !hasAm) return null;
+
+    if (hasCb) {
+      // 통합값이 있으면: combined를 진실값으로, 분리값은 참고용으로 분리
+      return {
+        depreciation: cb, // EBITDA 산정용 (mergeDAIntoCfRows가 cfItems에 push)
+        amortization: {}, // 통합값에 이미 포함되어 있으므로 비움 (이중 합산 방지)
+        combined: cb,
+        refDepreciation: hasDp ? dp : undefined,
+        refAmortization: hasAm ? am : undefined,
+      };
+    }
+    // 통합값 없을 때: 분리 합산이 EBITDA용
+    return { depreciation: dp, amortization: am };
+  }
+
+  return { ofs: build("ofs"), cfs: build("cfs") };
 }
 
 async function fetchAndParseOneAnnualReport(
@@ -1906,10 +1925,19 @@ async function extractDAFromAnnualReport(corpCode: string, years: string[]): Pro
             if (merged[k]![field][yr] === undefined) merged[k]![field][yr] = v;
           }
         }
+        // combined / refDepreciation / refAmortization 도 같은 방식으로 병합 (가시성 행 push용)
+        for (const optField of ["combined", "refDepreciation", "refAmortization"] as const) {
+          const src = r[k]![optField];
+          if (!src) continue;
+          if (!merged[k]![optField]) merged[k]![optField] = {};
+          for (const [yr, v] of Object.entries(src)) {
+            if (merged[k]![optField]![yr] === undefined) merged[k]![optField]![yr] = v as number;
+          }
+        }
       }
     }
-    if (merged.ofs) console.log(`[DART] D&A 개별 병합: 감가 ${JSON.stringify(merged.ofs.depreciation)}, 무형 ${JSON.stringify(merged.ofs.amortization)}`);
-    if (merged.cfs) console.log(`[DART] D&A 연결 병합: 감가 ${JSON.stringify(merged.cfs.depreciation)}, 무형 ${JSON.stringify(merged.cfs.amortization)}`);
+    if (merged.ofs) console.log(`[DART] D&A 개별 병합: 통합 ${JSON.stringify(merged.ofs.combined||{})}, 유형 ${JSON.stringify(merged.ofs.refDepreciation||{})}, 무형 ${JSON.stringify(merged.ofs.refAmortization||{})}`);
+    if (merged.cfs) console.log(`[DART] D&A 연결 병합: 통합 ${JSON.stringify(merged.cfs.combined||{})}, 유형 ${JSON.stringify(merged.cfs.refDepreciation||{})}, 무형 ${JSON.stringify(merged.cfs.refAmortization||{})}`);
     return merged;
   } catch (e) {
     console.warn(`[DART] extractDAFromAnnualReport 실패:`, e instanceof Error ? e.message : e);
@@ -1942,10 +1970,22 @@ function mergeDAIntoCfRows(
     return row;
   }
   const merged = [...cfRows];
-  const depRow = toRow("감가상각비", da.depreciation);
-  const amortRow = toRow("무형자산상각비", da.amortization);
-  if (depRow) merged.push(depRow);
-  if (amortRow) merged.push(amortRow);
+  // 우선순위 1: 통합값이 있으면 "감가상각비 및 무형자산상각비(주석)"으로 push (EBITDA 산정용)
+  if (da.combined && Object.keys(da.combined).length > 0) {
+    const cbRow = toRow("감가상각비 및 무형자산상각비(주석)", da.combined);
+    if (cbRow) merged.push(cbRow);
+    // 분리 참고값도 같이 push (가시성, EBITDA 중복합산 회피 위해 라벨에 "참고" 명시)
+    const refDep = toRow("유형자산감가상각비(참고)", da.refDepreciation || {});
+    const refAm = toRow("무형자산상각비(참고)", da.refAmortization || {});
+    if (refDep) merged.push(refDep);
+    if (refAm) merged.push(refAm);
+  } else {
+    // 통합값 없을 때: 분리값 그대로 push (구버전 동작)
+    const depRow = toRow("감가상각비", da.depreciation);
+    const amortRow = toRow("무형자산상각비", da.amortization);
+    if (depRow) merged.push(depRow);
+    if (amortRow) merged.push(amortRow);
+  }
   return merged;
 }
 
