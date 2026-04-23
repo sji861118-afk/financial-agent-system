@@ -961,11 +961,20 @@ function calcRatios(
       }
     }
 
-    // 이자비용 (EBITDA/이자비율용) — 음수 부호 제거 (IS에서 비용은 음수 표기될 수 있음)
-    let interestExpense = Math.abs(get(isRows, ["이자비용", "금융비용", "금융원가"], year));
-    // CF에서 이자비용이 더 정확할 수 있음 (IS에 없는 경우 fallback)
+    // 이자비용 (EBITDA/이자비율용) — 우선순위:
+    //  1) IS의 정확한 "이자비용" 행 (가장 정확, 발생주의)
+    //  2) CF의 실제 이자지급액 (현금주의 — IS에 별도 이자비용 행이 없을 때 fallback)
+    //  3) IS의 "금융비용/금융원가" — 통합 항목으로 외환손실/파생손실까지 포함되어 과대 위험.
+    //     이자보상배율을 비합리적으로 낮추는 주범 (예: 효성중공업 25년 0.86배 → 11.86배)
+    let interestExpense = Math.abs(getExact(isRows, ["이자비용", "이자비용(손실)"], year));
     if (interestExpense === 0 && cfRows.length > 0) {
-      interestExpense = Math.abs(get(cfRows, ["이자비용", "이자의지급", "이자지급"], year));
+      interestExpense = Math.abs(get(cfRows, ["이자지급", "이자의지급", "이자납부"], year));
+    }
+    if (interestExpense === 0) {
+      interestExpense = Math.abs(get(isRows, ["이자비용"], year));
+    }
+    if (interestExpense === 0) {
+      interestExpense = Math.abs(get(isRows, ["금융비용", "금융원가"], year));
     }
 
     // EBITDA = 영업이익 + 감가상각비 + 무형자산상각비

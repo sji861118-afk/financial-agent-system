@@ -878,7 +878,10 @@ function createFinancialSheet(
       const rRevenue = findRow("영업수익", "매출액", "공사수익", "보험수익");
       const rOpIncome = findRow("영업이익", "영업이익(손실)", "영업손익");
       const rNI = findRow("당기순이익", "당기순이익(손실)", "당기순손익", "연결당기순이익");
-      const rFinCost = findRow("금융비용", "이자비용", "금융원가");
+      // 이자비용 우선순위: IS의 정확한 "이자비용" 행 → IS "금융비용"(통합값) fallback
+      // 금융비용은 외환손실/파생손실 포함되어 이자보상배율을 과소평가시킴
+      const rInterestExact = findRow("이자비용", "이자비용(손실)");
+      const rFinCost = rInterestExact ?? findRow("금융비용", "금융원가");
 
       // BS 시트 참조 (ROA, ROE용) — 같은 fsDiv의 BS 시트명 찾기
       const bsSheetName = wb.worksheets.find(s =>
@@ -898,11 +901,11 @@ function createFinancialSheet(
         }
       }
 
-      // CF 시트 참조 (EBITDA용) — 같은 fsDiv의 CF 시트명 찾기
+      // CF 시트 참조 (EBITDA + 이자비용용) — 같은 fsDiv의 CF 시트명 찾기
       const cfSheetName = wb.worksheets.find(s =>
         s.name.includes("현금흐름표") && s.name.includes(fsDiv === "OFS" ? "개별" : "연결")
       )?.name;
-      let cfDeprRow = 0, cfAmortRow = 0;
+      let cfDeprRow = 0, cfAmortRow = 0, cfInterestPayRow = 0;
       if (cfSheetName) {
         const cfSheet = wb.getWorksheet(cfSheetName);
         if (cfSheet) {
@@ -910,10 +913,24 @@ function createFinancialSheet(
             const v = String(r.getCell(1).value || "").replace(/\s/g, "");
             if (!cfDeprRow && (v.includes("감가상각비") || v.includes("유형자산감가상각비"))) cfDeprRow = rn;
             if (!cfAmortRow && (v.includes("무형자산상각비") || v.includes("사용권자산상각비"))) cfAmortRow = rn;
+            // CF의 이자지급/이자납부는 실제 이자비용에 가까움 (단, 이자수취/이자수익은 제외)
+            if (!cfInterestPayRow &&
+                (v === "이자지급" || v === "이자납부" || v === "이자의지급" || v.endsWith("이자지급") || v.endsWith("이자납부"))) {
+              cfInterestPayRow = rn;
+            }
           });
         }
       }
       const cfRef = cfSheetName ? `'${cfSheetName}'!` : "";
+
+      // 이자비용 셀 참조 빌더: IS "이자비용" > CF "이자지급/이자납부" > IS "금융비용"
+      // formula 문자열 형태로 반환 (예: `'7.현금흐름표(연결)'!B30` 또는 `B11`)
+      function interestRef(c: string): string | null {
+        if (rInterestExact) return `${c}${rInterestExact}`;
+        if (cfInterestPayRow) return `${cfRef}${c}${cfInterestPayRow}`;
+        if (rFinCost) return `${c}${rFinCost}`;
+        return null;
+      }
 
       // EBITDA 행 번호 (EBITDA/이자비용에서 참조)
       const ebitdaRowNum = row + 3; // 영업이익률(0), ROA(1), ROE(2), EBITDA(3)
@@ -933,10 +950,17 @@ function createFinancialSheet(
             if (cfAmortRow) f += `+ABS(${cfRef}${c}${cfAmortRow})`;
             return f;
           }},
-        { name: "EBITDA/이자비용", desc: "EBITDA/|금융비용|", fmt: '0.0"배"',
-          formula: (c) => rFinCost ? `=IF(${c}${rFinCost}=0,"-",${c}${ebitdaRowNum}/ABS(${c}${rFinCost}))` : null },
-        { name: "이자보상배율", desc: "영업이익/|금융비용|", fmt: '0.0"배"',
-          formula: (c) => rOpIncome && rFinCost ? `=IF(${c}${rFinCost}=0,"-",${c}${rOpIncome}/ABS(${c}${rFinCost}))` : null },
+        { name: "EBITDA/이자비용", desc: "EBITDA/|이자비용|", fmt: '0.0"배"',
+          formula: (c) => {
+            const ref = interestRef(c);
+            return ref ? `=IF(${ref}=0,"-",${c}${ebitdaRowNum}/ABS(${ref}))` : null;
+          }},
+        { name: "이자보상배율", desc: "영업이익/|이자비용|", fmt: '0.0"배"',
+          formula: (c) => {
+            if (!rOpIncome) return null;
+            const ref = interestRef(c);
+            return ref ? `=IF(${ref}=0,"-",${c}${rOpIncome}/ABS(${ref}))` : null;
+          }},
         { name: "매출증가율", desc: "((당기-전기)/|전기|)×100", fmt: '0.0"%"',
           formula: (c, ci) => {
             if (ci === 0 || !rRevenue) return null;
@@ -973,9 +997,9 @@ function createFinancialSheet(
         "영업이익률 = (영업이익 / 매출액) × 100",
         "총자산이익률(ROA) = (당기순이익 / 자산총계) × 100",
         "자기자본이익률(ROE) = (당기순이익 / 자본총계) × 100",
-        "EBITDA = 영업이익 + 감가상각비 + 무형자산상각비",
-        "EBITDA/이자비용 = EBITDA / 이자비용(금융비용) — 배수 표시",
-        "이자보상배율 = 영업이익 / 이자비용(금융비용) — 배수 표시",
+        "EBITDA = 영업이익 + 감가상각비(CF) + 무형자산상각비(CF)",
+        "EBITDA/이자비용 = EBITDA / 이자비용  (IS 이자비용 > CF 이자지급 > IS 금융비용)",
+        "이자보상배율 = 영업이익 / 이자비용  (IS 이자비용 > CF 이자지급 > IS 금융비용)",
         "매출증가율 = ((당기매출액 - 전기매출액) / |전기매출액|) × 100",
       ];
       for (const f of isFormulas) {
