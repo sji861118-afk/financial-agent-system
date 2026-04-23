@@ -1844,7 +1844,7 @@ async function fetchAndParseOneAnnualReport(
 
     const xmlRes = await fetch(
       `${DART_API_BASE}/document.xml?crtfc_key=${apiKey}&rcept_no=${rceptNo}`,
-      { signal: AbortSignal.timeout(20_000) },
+      { signal: AbortSignal.timeout(30_000) }, // 사업보고서 ZIP 큰 회사 + Vercel iad1→DART 레이턴시 여유
     );
     const buf = Buffer.from(await xmlRes.arrayBuffer());
     if (buf[0] !== 0x50 || buf[1] !== 0x4B) return empty;
@@ -1875,7 +1875,7 @@ async function extractDAFromAnnualReport(corpCode: string, years: string[]): Pro
       pblntf_ty: "A",
       page_count: "30",
     });
-    const listRes = await fetch(`${DART_API_BASE}/list.json?${listParams}`, { signal: AbortSignal.timeout(10_000) });
+    const listRes = await fetch(`${DART_API_BASE}/list.json?${listParams}`, { signal: AbortSignal.timeout(15_000) });
     const listJson = await listRes.json();
     const reports: { rcept_no: string; report_nm: string }[] = (listJson.list || []).filter(
       (it: any) => /사업보고서/.test(it.report_nm) && !/기재정정/.test(it.report_nm),
@@ -2114,15 +2114,26 @@ export async function buildFinancialData(
     const needOfsDa = result.hasOfs && !hasCfDepreciationRows(result.cfItems);
     const needCfsDa = result.hasCfs && !hasCfDepreciationRows(result.cfItemsCfs);
     if (needOfsDa || needCfsDa) {
+      const t0 = Date.now();
       console.log(`[DART] CF 조정항목 누락 감지 (개별=${needOfsDa}, 연결=${needCfsDa}) → 사업보고서 XML 보강 시도`);
       const da = await extractDAFromAnnualReport(corpCode, years);
-      if (needOfsDa && da.ofs) {
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+      const ofsApplied = needOfsDa && da.ofs;
+      const cfsApplied = needCfsDa && da.cfs;
+      if (ofsApplied) {
         result.cfItems = mergeDAIntoCfRows(result.cfItems, da.ofs, result.years, years);
         result.ratios = calcRatios(result.bsItems, result.isItems, result.years, result.cfItems);
       }
-      if (needCfsDa && da.cfs) {
+      if (cfsApplied) {
         result.cfItemsCfs = mergeDAIntoCfRows(result.cfItemsCfs, da.cfs, result.years, years);
         result.ratiosCfs = calcRatios(result.bsItemsCfs, result.isItemsCfs, result.years, result.cfItemsCfs);
+      }
+      console.log(`[DART] D&A 보강 완료 ${elapsed}s — OFS적용=${!!ofsApplied}, CFS적용=${!!cfsApplied}`);
+      if (needOfsDa && !ofsApplied) {
+        console.warn(`[DART] ⚠ OFS D&A 보강 실패 — EBITDA가 영업이익만 반영됨. 사업보고서 XML 주석 매칭 실패 또는 timeout 가능성`);
+      }
+      if (needCfsDa && !cfsApplied) {
+        console.warn(`[DART] ⚠ CFS D&A 보강 실패 — EBITDA가 영업이익만 반영됨. 사업보고서 XML 주석 매칭 실패 또는 timeout 가능성`);
       }
     }
 

@@ -526,7 +526,10 @@ function createFinancialSheet(
   data: ExcelReportData,
   sheetName: string,
   stmtType: "BS" | "IS" | "CF",
-  fsDiv: "OFS" | "CFS"
+  fsDiv: "OFS" | "CFS",
+  // IS 시트의 EBITDA/이자보상배율 수식이 참조할 CF 시트명.
+  // CF 시트는 IS보다 늦게 생성되므로 generateExcelReport가 미리 계산해 전달.
+  cfSheetNameHint?: string
 ): void {
   const ws = wb.addWorksheet(sheetName);
   setColWidths(ws, { 1: 40, 2: 15, 3: 15, 4: 15, 5: 15, 6: 12 });
@@ -901,24 +904,26 @@ function createFinancialSheet(
         }
       }
 
-      // CF 시트 참조 (EBITDA + 이자비용용) — 같은 fsDiv의 CF 시트명 찾기
-      const cfSheetName = wb.worksheets.find(s =>
+      // CF 시트 참조 (EBITDA + 이자비용용)
+      // 핵심: CF 시트는 generateExcelReport에서 IS보다 늦게 생성되므로, IS 빌드 시점에 wb에는 없음.
+      //   → cfSheetNameHint(미래 시트명)를 우선 사용
+      //   → 행 번호는 data.cfItemsOfs/cfItemsCfs 배열에서 직접 산출 (CF 시트 row 1=title, 2=header, 3+=items)
+      const cfData = fsDiv === "OFS" ? data.cfItemsOfs : data.cfItemsCfs;
+      const cfSheetName = cfSheetNameHint ?? wb.worksheets.find(s =>
         s.name.includes("현금흐름표") && s.name.includes(fsDiv === "OFS" ? "개별" : "연결")
       )?.name;
       let cfDeprRow = 0, cfAmortRow = 0, cfInterestPayRow = 0;
-      if (cfSheetName) {
-        const cfSheet = wb.getWorksheet(cfSheetName);
-        if (cfSheet) {
-          cfSheet.eachRow((r, rn) => {
-            const v = String(r.getCell(1).value || "").replace(/\s/g, "");
-            if (!cfDeprRow && (v.includes("감가상각비") || v.includes("유형자산감가상각비"))) cfDeprRow = rn;
-            if (!cfAmortRow && (v.includes("무형자산상각비") || v.includes("사용권자산상각비"))) cfAmortRow = rn;
-            // CF의 이자지급/이자납부는 실제 이자비용에 가까움 (단, 이자수취/이자수익은 제외)
-            if (!cfInterestPayRow &&
-                (v === "이자지급" || v === "이자납부" || v === "이자의지급" || v.endsWith("이자지급") || v.endsWith("이자납부"))) {
-              cfInterestPayRow = rn;
-            }
-          });
+      if (cfData && cfData.length > 0) {
+        for (let i = 0; i < cfData.length; i++) {
+          const v = String(cfData[i].account || "").replace(/\s/g, "");
+          const rn = i + 3; // CF 시트의 데이터 행 번호 (title=1, header=2, items=3+)
+          if (!cfDeprRow && (v.includes("감가상각비") || v.includes("유형자산감가상각비"))) cfDeprRow = rn;
+          if (!cfAmortRow && (v.includes("무형자산상각비") || v.includes("사용권자산상각비"))) cfAmortRow = rn;
+          // CF의 이자지급/이자납부는 실제 이자비용에 가까움 (단, 이자수취/이자수익은 제외)
+          if (!cfInterestPayRow &&
+              (v === "이자지급" || v === "이자납부" || v === "이자의지급" || v.endsWith("이자지급") || v.endsWith("이자납부"))) {
+            cfInterestPayRow = rn;
+          }
         }
       }
       const cfRef = cfSheetName ? `'${cfSheetName}'!` : "";
@@ -1638,6 +1643,17 @@ export async function generateExcelReport(
 
   let tabNum = 1;
 
+  // CF 시트명 사전 계산 — IS 시트의 EBITDA/이자보상배율 수식이 미리 참조 가능하도록.
+  // 시트 생성 순서가 BS→IS→CF인데 IS 빌드 시점에 CF는 아직 없어서 wb.worksheets.find가 실패하던 버그 fix.
+  const cfOfsAvailable = data.hasOfs && !!(data.cfItemsOfs && data.cfItemsOfs.length > 0);
+  const cfCfsAvailable = data.hasCfs && !!(data.cfItemsCfs && data.cfItemsCfs.length > 0);
+  const cfOfsTabNum = data.hasOfs ? 4 : 0; // Summary(1)+BS개별(2)+IS개별(3)+CF개별(4)
+  const cfOfsSheetName = cfOfsAvailable ? `${cfOfsTabNum}.현금흐름표(개별)` : undefined;
+  // CF 연결 시트 번호: cfOfsTabNum 다음 + BS연결(+1) + IS연결(+1) → +3 (CF 개별이 있을 때) 또는 +2
+  const cfsTabBase = cfOfsAvailable ? cfOfsTabNum + 2 : (data.hasOfs ? 4 : 1);
+  const cfCfsTabNum = data.hasCfs ? cfsTabBase + 1 : 0;
+  const cfCfsSheetName = cfCfsAvailable ? `${cfCfsTabNum}.현금흐름표(연결)` : undefined;
+
   // 1. Summary
   createSummarySheet(wb, data);
 
@@ -1652,19 +1668,20 @@ export async function generateExcelReport(
       "OFS"
     );
 
-    // 3. IS Individual
+    // 3. IS Individual — CF 시트명 hint 전달
     tabNum += 1;
     createFinancialSheet(
       wb,
       data,
       `${tabNum}.손익계산서(개별)`,
       "IS",
-      "OFS"
+      "OFS",
+      cfOfsSheetName
     );
   }
 
   // CF Individual (if available)
-  if (data.hasOfs && data.cfItemsOfs && data.cfItemsOfs.length > 0) {
+  if (cfOfsAvailable) {
     tabNum += 1;
     createFinancialSheet(wb, data, `${tabNum}.현금흐름표(개별)`, "CF", "OFS");
   }
@@ -1685,9 +1702,10 @@ export async function generateExcelReport(
       data,
       `${tabNum}.손익계산서(연결)`,
       "IS",
-      "CFS"
+      "CFS",
+      cfCfsSheetName
     );
-    if (data.cfItemsCfs && data.cfItemsCfs.length > 0) {
+    if (cfCfsAvailable) {
       tabNum += 1;
       createFinancialSheet(wb, data, `${tabNum}.현금흐름표(연결)`, "CF", "CFS");
     }
