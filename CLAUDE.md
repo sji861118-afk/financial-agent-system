@@ -93,6 +93,11 @@
 - [2026-04-21] **Vercel CLI stdout/stderr 분리 파싱**: `vercel ls --prod`는 stdout=URL 목록만, stderr=Ready 상태 테이블. 이전 파서 `head -5 | grep '● Ready'` → stdout의 URL만 보고 상태 못 찾아 Ready를 Unknown으로 오탐 → 실제 성공한 배포를 롤백 시도. fix: `2>&1` 병합 + `grep -oE '● [A-Za-z]+' | head -1`
 - [2026-04-21] **서비스 계정 키 감사 명령**: `git log --all --full-history -- "*firebase*"` (파일 단위) + `git log --all --full-history -p | grep "BEGIN PRIVATE KEY"` (본문 단위) 이중 체크. `.gitignore` 패턴은 `*firebase-adminsdk*.json` + `*-firebase-*.json` 이중(Console 기본명 + 변형 모두 커버). `.claude/settings.json`의 PreToolUse hook이 credential 패턴 포함 staged 파일을 commit 차단
 - [2026-04-21] **Dead code 삭제 heuristic**: ES 모듈은 `grep -rEl "from ['\"].*<module>['\"]"` 0건이면 안전 삭제. 단 (a) 동적 import 없음, (b) 문자열 기반 resolution 없음, (c) re-export 체인 없음 전제. `app/src/lib/firebase.ts` 제거 사례 — 1개월간 import 0건으로 남아있던 dead code
+- [2026-04-23] **Vercel default region(iad1)↔DART korea 60초 timeout**: buildFinancialData 한 번 호출에 30초+, 사업보고서 ZIP 보강 추가 시 FUNCTION_INVOCATION_TIMEOUT. `app/vercel.json`에 `{"regions":["icn1"]}` 설정 → 1.2초로 단축 (50배+). **deploy.sh가 src/만 sync하고 vercel.json은 누락하던 버그 동시 수정** — rsync/robocopy 두 분기 모두에 `cp vercel.json` 추가
+- [2026-04-23] **이자비용 우선순위 재정렬**: IS의 정확매칭 "이자비용" → CF "이자지급/이자납부/이자의지급" → IS "금융비용/금융원가" fallback. 효성중공업처럼 IS에 "금융비용"(이자+외환손실+파생손실 통합)만 있는 회사는 통합값으로 잡혀 이자보상배율을 비합리적으로 낮춤 (25년 0.86→11.86배, 14배 차이). calcRatios + excel-generator 모두 동일 우선순위
+- [2026-04-23] **EBITDA Excel 셀 시트 참조 순서 버그**: 시트 생성 순서가 BS→IS→CF인데 IS의 EBITDA formula는 `wb.worksheets.find`로 CF 시트 검색 → 못 찾아 cfDeprRow=0. fix: createFinancialSheet에 `cfSheetNameHint` 인자 추가 + generateExcelReport에서 CF 시트명 사전 계산해 IS 호출에 전달. 행 번호는 wb 검색 대신 `data.cfItemsOfs/cfItemsCfs` 배열에서 직접 산출 (CF 시트 row offset: title=1, header=2, items=3+i)
+- [2026-04-23] **D&A 보강 통합/참고 행 동시 push**: 효성중공업처럼 사업보고서 주석에 "감가상각비 및 무형자산상각비"가 단일 통합 합계(56,122)로 공시되는 케이스 + "유형자산감가상각비"·"무형자산상각비" 분리 합계가 별도로 더 작게 공시되는 케이스 공존. 통합값이 분리합보다 큼(사용권자산상각비 등 추가 포함) → **통합이 EBITDA 진실값**. parseDAFromAnnualXml이 둘 다 수집해 `combined`/`refDepreciation`/`refAmortization` 필드로 반환, mergeDAIntoCfRows가 "감가상각비 및 무형자산상각비(주석)" + "유형자산감가상각비(참고)" + "무형자산상각비(참고)" 3행으로 push. **이중 합산 회피**: calcRatios가 `(참고)` 행 필터 + 통합 라벨 우선 매칭, excel-generator가 cfCombinedDARow 잡히면 cfAmortRow=0으로 EBITDA formula에서 통합값만 한 번 합산
+- [2026-04-23] **D&A 보강 트리거 조건**: `hasCfDepreciationRows()`가 false일 때만 발동(CF 원본에 감가/무형/사용권 키워드 행이 없을 때). 대부분 회사(삼성/LG/SK/네이버 등)는 CF 원본에 감가 행 있음 → 보강 skip. 효성중공업처럼 CF에 D&A 통째로 누락된 회사만 보강 path. 일반화 검증 9개사 (삼성·LG화학·SK하이닉스·카카오·셀트리온·NAVER·현대건설·대우건설·효성중공업) 모두 정상 EBITDA 산출
 
 ## Current Progress
 ### 완료 (2026-03-26)
@@ -232,6 +237,15 @@
 - 커밋: ce96a53, 63c5133, 0e9c574, 7683261, 1866e39, b011a9e, 2b86e4e, 3363a60, 047bfaa
 - Vercel 프로덕션 배포 9회 모두 `● Ready` 확인
 
+### 완료 (2026-04-23) — EBITDA D&A 보강 종합 + Vercel ICN1 region
+- **이자비용 우선순위 재정렬** (commit dc1b767): IS 정확매칭 "이자비용" → CF "이자지급/이자납부" → IS "금융비용". 효성중공업 25년 이자보상배율 0.86→11.86배 (개별), —→14.0배 (연결)
+- **Excel 시트 참조 시점 버그 수정** (commit 1f65366): IS 빌드 시 CF 시트 미생성 → cfDeprRow=0 fail. createFinancialSheet에 `cfSheetNameHint` 인자 추가 + generateExcelReport에서 CF 시트명 사전 계산 → IS formula가 미래 CF 시트명 참조 (Excel sheet name 기반 lazy resolution). 행 번호는 `data.cfItemsOfs/cfItemsCfs` 배열에서 직접 산출
+- **Vercel region 이전** (commit dd24d2d/65d901e): default iad1 → icn1(Seoul). buildFinancialData 60s→1.2s (50배+). `app/vercel.json` 신규 + deploy.sh가 src/만 sync하던 버그 동시 수정 (rsync/robocopy 두 분기 모두에 vercel.json cp 추가)
+- **D&A 통합/참고 행 동시 push** (commit 9f474be): 효성중공업 사업보고서 주석에 "감가상각비 및 무형자산상각비"(통합 56,122) + "유형자산감가상각비"(10,327) + "무형자산상각비"(3,767) 모두 공시. parseDAFromAnnualXml이 DAResultPerFs에 `combined`/`refDepreciation`/`refAmortization` 필드 추가. mergeDAIntoCfRows가 "감가상각비 및 무형자산상각비(주석)" + "(참고)" 행 3개 push. calcRatios+excel-generator가 통합 우선 + 참고 skip으로 이중 합산 방지
+- **/api/dart/diag-da 임시 진단 endpoint** (commit e1b5838): production buildFinancialData/list.json/document.xml/JSZip path 진단용. 원인 추적 후 정리 예정
+- **다중 회사 일반화 검증**: 삼성전자(EBITDA 61.6조)·카카오(40.3조)·셀트리온(15.5조)·현대건설(0.39조)·효성중공업(0.5조 with 보강) 모두 정상. CF 원본에 D&A 있는 회사는 보강 skip, 효성중공업처럼 누락된 회사만 사업보고서 보강 path 발동
+- 효성중공업 검증 (개별 25년): EBITDA 442,378→**498,500** (영업이익+통합 56,122), 이자보상배율 **11.9배**
+
 ### 미확인/잠재 이슈
 - PDF 업로드 IS 파싱이 Vercel에서 실제 작동하는지 최종 확인 필요 (pdf-parse fallback 줄 재구성)
 - 파일 제거 시 파싱 결과 유지 로직 (남은 파일의 데이터가 정확한지)
@@ -247,7 +261,10 @@
 - **DOCX opinion 텍스트 HTML 엔티티**: &amp;quot; &amp;apos; 등 PDF 텍스트의 특수문자 이스케이프 처리 필요
 
 ## Next Session Context
-1. **[High] 표 서식 최종 정리**: BS/IS/CF 시트에서 빈 셀 테두리 누락, 비율행 아래 이탈 항목(R51-56 등) 정리 필요
+1. **[High] /api/dart/diag-da 임시 endpoint 제거**: 원인 추적용으로 추가, production에 노출 중. PUBLIC_PATHS에서도 제거
+2. **[Medium] D&A 일반화 강화 검토**: 현재 `hasCfDepreciationRows()` false일 때만 사업보고서 보강. CF에 감가는 있지만 무형/사용권 별도 행이 없는 회사들도 가시성 향상 위해 사업보고서 분리 참고 행 push 옵션 검토 (성능 trade-off)
+3. **[Medium] 대우건설 EBITDA 음수 케이스 검증**: CF 감가 970(매우 작음) + 영업이익 음수 → EBITDA -921,063. 사업보고서 보강 강제 trigger 임계값(예: CF 감가가 영업이익의 1% 미만) 도입 검토
+4. **[High] 표 서식 최종 정리**: BS/IS/CF 시트에서 빈 셀 테두리 누락, 비율행 아래 이탈 항목(R51-56 등) 정리 필요
 2. **[High] 회계 감수 에이전트 UI 표시**: 현재 API 응답에만 포함 → 프론트엔드에 검증 결과 표시 (경고 배지, 상세 팝업)
 3. **[High] 증감사유 주석 매칭 품질 개선**: 키워드 매칭 정확도 향상, 관련 없는 주석 필터링, 주석 본문 중 증감 관련 테이블 데이터 추출
 4. **[Medium] fetchBorrowingNotes/fetchAuditOpinion 복원**: 현재 스킵 → 타임아웃 안전하게 재통합 (총차입금 셀수식 SUM에 빠진 항목 보완)
