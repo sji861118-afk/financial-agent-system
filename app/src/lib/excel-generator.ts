@@ -1439,7 +1439,9 @@ function createAnalysisSheet(
   }
   row += 1;
 
-  ws.mergeCells(row, 1, row + 2, totalCols);
+  // 종합 소견 — 1행 N칸 병합 + 행 높이 + wrapText로 자동 줄바꿈.
+  // (이전: 3행 N칸 병합 → ExcelJS dump 시 3행 모두 동일 텍스트로 보여 검색·복사 시 불편)
+  ws.mergeCells(row, 1, row, totalCols);
   const opinionCell = ws.getCell(row, 1);
   opinionCell.value = report.analystOpinion || "-";
   opinionCell.font = NORMAL_FONT;
@@ -1448,12 +1450,11 @@ function createAnalysisSheet(
     vertical: "top",
     wrapText: true,
   };
-  for (let r = row; r <= row + 2; r++) {
-    for (let c = 1; c <= totalCols; c++) {
-      ws.getCell(r, c).border = THIN_BORDER;
-    }
+  ws.getRow(row).height = 60; // 약 3행 분량의 높이 확보 (텍스트 wrap 시각 영역)
+  for (let c = 1; c <= totalCols; c++) {
+    ws.getCell(row, c).border = THIN_BORDER;
   }
-  row += 4;
+  row += 2;
 
   // Source
   writeSourceNote(
