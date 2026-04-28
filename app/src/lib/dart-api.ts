@@ -1301,8 +1301,18 @@ async function parseOneAuditXml(
     if (rawBuf[0] !== 0x50 || rawBuf[1] !== 0x4B) return null;
 
     const zip = await JSZip.loadAsync(rawBuf);
-    const firstFile = Object.keys(zip.files)[0];
-    const content = await zip.files[firstFile].async("string");
+    // ZIP 안에 여러 XML 파일이 있는 경우 (사업보고서 본문 + 별첨 첨부 등) 본문이
+    // 두 번째 이후에 위치할 수 있음. 제넥신 24년 사업보고서 = 첫 파일(566KB, 별첨)
+    // + 두 번째 파일(1.5MB, 본문에 연결+개별 BS/IS 모두 포함). 첫 파일만 읽으면
+    // 연결재무제표/IS 누락. 가장 큰 .xml 파일을 본문으로 선택.
+    const xmlNames = Object.keys(zip.files).filter(n => n.toLowerCase().endsWith(".xml"));
+    const sortedByCfFs = xmlNames.sort((a, b) => {
+      const sa = (zip.files[a] as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize || 0;
+      const sb = (zip.files[b] as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize || 0;
+      return sb - sa;
+    });
+    const mainFile = sortedByCfFs[0] || Object.keys(zip.files)[0];
+    const content = await zip.files[mainFile].async("string");
 
     const trMatches = content.match(/<TR[^>]*>[\s\S]*?<\/TR>/gi) || [];
     const allRows: string[][] = [];
@@ -2552,8 +2562,16 @@ export async function fetchBorrowingNotes(
     if (rawBuf[0] !== 0x50 || rawBuf[1] !== 0x4B) return null;
 
     const zip = await JSZip.loadAsync(rawBuf);
-    const firstFile = Object.keys(zip.files)[0];
-    const content = await zip.files[firstFile].async("string");
+    // ZIP 안 가장 큰 .xml 파일을 본문으로 선택 (parseOneAuditXml과 동일 로직).
+    // 사업보고서는 보통 첨부(.xml 0.5MB) + 본문(.xml 1.5MB) 구조 — 본문이 정확.
+    const xmlNames = Object.keys(zip.files).filter(n => n.toLowerCase().endsWith(".xml"));
+    const sortedNames = xmlNames.sort((a, b) => {
+      const sa = (zip.files[a] as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize || 0;
+      const sb = (zip.files[b] as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize || 0;
+      return sb - sa;
+    });
+    const mainFile = sortedNames[0] || Object.keys(zip.files)[0];
+    const content = await zip.files[mainFile].async("string");
 
     // ── TR 기반 전체 행 파싱 (TD, TH, TE 모두 지원) ──
     const trMatches = content.match(/<TR[^>]*>[\s\S]*?<\/TR>/gi) || [];
