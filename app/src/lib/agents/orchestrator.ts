@@ -123,8 +123,10 @@ async function executeFlow(ctx: OrchestratorContext): Promise<OrchestratorResult
       company: fr.companyInfo,
       bsItemsOfs: ctx.mergedData.bsItems,
       isItemsOfs: ctx.mergedData.isItems,
+      cfItemsOfs: fr.cfItems || [],  // 이자비용 4-step priority의 step 2 (CF 이자지급)
       bsItemsCfs: fr.bsItemsCfs || [],
       isItemsCfs: fr.isItemsCfs || [],
+      cfItemsCfs: fr.cfItemsCfs || [],
       ratiosOfs: fr.ratios || {},
       ratiosCfs: fr.ratiosCfs || {},
       hasOfs: fr.hasOfs,

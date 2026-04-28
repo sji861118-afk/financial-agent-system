@@ -28,8 +28,10 @@ export interface FinancialDataInput {
   };
   bsItemsOfs: Array<Record<string, string | number | undefined>>;
   isItemsOfs: Array<Record<string, string | number | undefined>>;
+  cfItemsOfs?: Array<Record<string, string | number | undefined>>;  // CF 이자지급 우선순위 매칭용 (이자비용 4-step priority)
   bsItemsCfs: Array<Record<string, string | number | undefined>>;
   isItemsCfs: Array<Record<string, string | number | undefined>>;
+  cfItemsCfs?: Array<Record<string, string | number | undefined>>;
   ratiosOfs: Record<string, Record<string, string>>;
   ratiosCfs: Record<string, Record<string, string>>;
   hasOfs: boolean;
@@ -449,10 +451,46 @@ function fmtTimes(val: number | null): string {
 // BS/IS 항목 검색 유틸
 // ============================================================
 
+/**
+ * 이자비용 추출 — dart-api.ts calcRatios L975-L983과 동일한 4-step priority.
+ * 셀리드 5번시트(R024 -7.44) ≠ IS시트 셀수식(R027 -41.07) 같은 dual-source 결함을 차단.
+ * 1. IS exact "이자비용" 정확매칭
+ * 2. CF exact "이자지급/이자의지급/이자납부" 정확매칭
+ * 3. IS partial "이자비용" 부분매칭
+ * 4. IS partial "금융비용/금융원가" fallback (외환손실/파생손실 포함되어 부정확하지만 마지막 수단)
+ */
+function findInterestExpenseItem(
+  isItems: Array<Record<string, string>>,
+  cfItems: Array<Record<string, string>>
+): Record<string, string> | null {
+  // step 1
+  const exact1 = findItem(isItems, ["이자비용"]);
+  if (exact1 && (exact1["account"] || "").replace(/ /g, "") === "이자비용") return exact1;
+  // step 2
+  if (cfItems.length) {
+    const exact2 = findItem(cfItems, ["이자지급", "이자의지급", "이자납부"]);
+    if (exact2) return exact2;
+  }
+  // step 3
+  if (exact1) return exact1; // step 1 부분매칭 결과 (예: "이자비용(주임종)")
+  // step 4
+  return findItem(isItems, ["금융비용", "금융원가"]);
+}
+
 function findItem(
   items: Array<Record<string, string>>,
   keywords: string[]
 ): Record<string, string> | null {
+  // 1. 정확매칭 우선 — "매출"(=매출액)이 "매출원가"·"매출총이익"·"매출채권"보다 먼저 매치되도록.
+  //    셀리드 IS는 "매출" 한 단어만 사용하는데 키워드에 "매출액"만 있으면 매칭 실패.
+  for (const item of items) {
+    const acct = (item["account"] || "").replace(/ /g, "");
+    for (const kw of keywords) {
+      const k = kw.replace(/ /g, "");
+      if (acct === k) return item;
+    }
+  }
+  // 2. 부분매칭 fallback (기존 동작)
   for (const item of items) {
     const acct = (item["account"] || "").replace(/ /g, "");
     for (const kw of keywords) {
@@ -478,7 +516,7 @@ function calcGrowthRatios(
 
   const growth: Record<string, Record<string, number | null>> = {};
 
-  const revenueItem = findItem(isItems, ["매출액", "영업수익", "수익(매출액)"]);
+  const revenueItem = findItem(isItems, ["매출", "매출액", "영업수익", "수익(매출액)"]);
   const opIncomeItem = findItem(isItems, ["영업이익", "영업손익", "영업손실"]);
   const totalAssetsItem = findItem(bsItems, ["자산총계"]);
   const equityItem = findItem(bsItems, ["자본총계"]);
@@ -529,7 +567,7 @@ function calcActivityRatios(
   const bsItems = fsType === "ofs" ? finData.bsItemsOfs : finData.bsItemsCfs;
   const isItems = fsType === "ofs" ? finData.isItemsOfs : finData.isItemsCfs;
 
-  const revenueItem = findItem(isItems, ["매출액", "영업수익", "수익(매출액)"]);
+  const revenueItem = findItem(isItems, ["매출", "매출액", "영업수익", "수익(매출액)"]);
   const cogsItem = findItem(isItems, ["매출원가"]);
   const totalAssetsItem = findItem(bsItems, ["자산총계"]);
   const inventoryItem = findItem(bsItems, ["재고자산"]);
@@ -584,12 +622,17 @@ function calcAdditionalRatios(
 ): Record<string, Record<string, number | null>> {
   const bsItems = fsType === "ofs" ? finData.bsItemsOfs : finData.bsItemsCfs;
   const isItems = fsType === "ofs" ? finData.isItemsOfs : finData.isItemsCfs;
+  const cfItems = (fsType === "ofs" ? finData.cfItemsOfs : finData.cfItemsCfs) || [];
 
-  const revenueItem = findItem(isItems, ["매출액", "영업수익", "수익(매출액)"]);
+  const revenueItem = findItem(isItems, ["매출", "매출액", "영업수익", "수익(매출액)"]);
   const grossProfitItem = findItem(isItems, ["매출총이익"]);
   const opIncomeItem = findItem(isItems, ["영업이익", "영업손익", "영업손실"]);
   const netIncomeItem = findItem(isItems, ["당기순이익", "당기순손익", "당기순손실", "분기순이익"]);
-  const interestExpItem = findItem(isItems, ["이자비용", "금융비용", "금융원가"]);
+  // dual-source 통일: dart-api.ts calcRatios와 동일한 4-step priority (IS이자비용 → CF이자지급 → IS partial → IS금융비용)
+  const interestExpItem = findInterestExpenseItem(
+    isItems as Array<Record<string, string>>,
+    cfItems as Array<Record<string, string>>
+  );
   const inventoryItem = findItem(bsItems, ["재고자산"]);
 
   // === 유동자산 추론 (3단계 fallback) ===
