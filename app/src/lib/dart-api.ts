@@ -262,9 +262,13 @@ const DEPTH1_KEYWORDS = new Set([
   "현금및예치금", "유가증권", "대출채권",
   "차입부채", "기타부채", "기타자산",
   "파생상품자산", "파생상품부채",
-  "당기손익인식금융자산", "기타포괄손익인식금융자산",
+  "당기손익인식금융자산", "기타포괄손익인식금융자산", "기타포괄손익금융자산",
   "상각후원가측정금융자산", "당기손익-공정가치측정금융자산",
   "기타포괄손익-공정가치측정금융자산",
+  // ── BS 비유동자산 세부 (바이오텍/지주사 등) ──
+  "관계기업및공동기업투자", "관계기업투자", "공동기업투자", "종속기업투자",
+  "매출채권및기타채권", "장기매출채권및기타채권",
+  "사용권자산",
   // ── BS 보험업 ──
   "보험계약자산", "보험계약부채", "재보험자산", "재보험부채",
 
@@ -294,7 +298,9 @@ const DEPTH1_KEYWORDS = new Set([
 ]);
 
 function detectAccountDepth(accountNm: string, _sjFilter: string[]): number {
-  const nm = accountNm.replace(/\s/g, "");
+  // (유동)/(비유동) suffix는 매칭 시점에 제거 — "당기손익-공정가치측정금융자산(유동)" 같은
+  // 케이스가 DEPTH1_KEYWORDS의 "당기손익-공정가치측정금융자산"과 매칭되도록.
+  const nm = accountNm.replace(/\s/g, "").replace(/\(유동\)|\(비유동\)/g, "");
 
   // depth 0: 총계
   if (DEPTH0_KEYWORDS.has(nm)) return 0;
@@ -466,7 +472,7 @@ const BS_EQUITY_KEYWORDS = [
 
 function classifyBsSectionByName(nm: string): 0 | 1 | 2 | 9 {
   const n = nm.replace(/[\s()\-·]/g, "");
-  if (n === "자본과부채총계" || n === "부채와자본총계") return 9;
+  if (n === "자본과부채총계" || n === "부채와자본총계" || n === "부채및자본총계") return 9;
   if (BS_EQUITY_KEYWORDS.some(k => n === k.replace(/\s/g, "") || n.includes(k.replace(/\s/g, "")))) return 2;
   if (BS_LIAB_KEYWORDS.some(k => n === k.replace(/\s/g, "") || n.includes(k.replace(/\s/g, "")))) return 1;
   // 일반 규칙: 계정명에 "부채"가 포함되면 부채 (당기손익-공정가치측정금융부채 등)
@@ -475,35 +481,49 @@ function classifyBsSectionByName(nm: string): 0 | 1 | 2 | 9 {
   return 0; // 자산
 }
 
-/** string[] 배열을 자산→자산총계→부채→부채총계→자본→자본총계→자본과부채총계 순으로 재정렬 (in-place) */
-function reorderBsAccounts(order: string[]) {
-  const norm = (s: string) => s.replace(/[\s()]/g, "");
-  const assets: string[] = [], liabs: string[] = [], equities: string[] = [];
-  let totalAsset: string | null = null, totalLiab: string | null = null;
-  let totalEquity: string | null = null, totalAll: string | null = null;
+/**
+ * BS 정렬용 sub-rank — 같은 카테고리 내부도 표준 순서로 정렬.
+ * - 0.x: 자산 (입력 순서 유지)
+ * - 1.x: 부채 (입력 순서 유지)
+ * - 2.0~2.6: 자본 sub-rank (자본금→자본잉여금→기타자본→기타포괄→이익잉여금→비지배지분)
+ * - 9.1~9.4: 총계 (자산총계→부채총계→자본총계→부채및자본총계)
+ *
+ * 셀리드 R074-R077의 "기타자본항목→기타포괄→자본금→이익잉여금" 비정상 순서와
+ * 자본총계가 부채및자본총계 뒤에 오는 케이스를 한 번에 해결.
+ */
+function getBsSortRank(nm: string): number {
+  const n = nm.replace(/[\s()]/g, "");
+  // 총계 4종 — 강제 순서
+  if (n === "자산총계" || n === "자산합계") return 9.1;
+  if (n === "부채총계" || n === "부채합계") return 9.2;
+  if (n === "자본총계" || n === "자본합계") return 9.3;
+  if (n === "자본과부채총계" || n === "부채와자본총계" || n === "부채및자본총계") return 9.4;
 
-  for (const nm of order) {
-    const n = norm(nm);
-    if (n === "자산총계") totalAsset = nm;
-    else if (n === "부채총계") totalLiab = nm;
-    else if (n === "자본총계") totalEquity = nm;
-    else if (n === "자본과부채총계" || n === "부채와자본총계") totalAll = nm;
-    else {
-      const sec = classifyBsSectionByName(nm);
-      if (sec === 2) equities.push(nm);
-      else if (sec === 1) liabs.push(nm);
-      else assets.push(nm);
-    }
+  const sec = classifyBsSectionByName(nm);
+  if (sec === 2) {
+    // 자본 sub-rank
+    if (/지배기업소유주지분|지배기업의소유주에게귀속되는지분|지배주주지분/.test(n)) return 2.0;
+    if (/^자본금$|보통주자본금|우선주자본금/.test(n)) return 2.1;
+    if (/자본잉여금|주식발행초과금/.test(n)) return 2.2;
+    if (/자본조정|기타자본|자기주식|신종자본증권/.test(n)) return 2.3;
+    if (/기타포괄손익누계액|기타포괄손익잔액|평가손익누계액/.test(n)) return 2.4;
+    if (/이익잉여금|결손금|미처분이익잉여금|미처리결손금/.test(n)) return 2.5;
+    if (/비지배지분|소수주주지분/.test(n)) return 2.6;
+    return 2.5; // unknown 자본 항목은 이익잉여금 자리
   }
+  if (sec === 1) return 1.5; // 부채는 입력 순서 유지 (모두 동일 rank)
+  return 0.5; // 자산도 입력 순서 유지
+}
 
+/** BS 항목 배열을 표준 순서로 안정 정렬 (in-place). 같은 rank 항목은 입력 순서 보존. */
+function reorderBsAccounts(order: string[]) {
+  const indexed = order.map((nm, i) => ({ nm, i, rank: getBsSortRank(nm) }));
+  indexed.sort((a, b) => {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    return a.i - b.i; // stable
+  });
   order.length = 0;
-  order.push(...assets);
-  if (totalAsset) order.push(totalAsset);
-  order.push(...liabs);
-  if (totalLiab) order.push(totalLiab);
-  order.push(...equities);
-  if (totalEquity) order.push(totalEquity);
-  if (totalAll) order.push(totalAll);
+  for (const { nm } of indexed) order.push(nm);
 }
 
 function getIsStandardOrder(accountNm: string): number {
