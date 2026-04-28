@@ -208,6 +208,8 @@ export interface FinancialResult {
   noDataReason?: string;
   // 감사보고서 주석 섹션 (번호 → 텍스트)
   notesSections?: Record<string, string>;
+  // 회계기준 변경 감지 (K-IFRS↔K-GAAP) — UI 토스트/경고용
+  accountingStandardChanged?: boolean;
 }
 
 // ── 계정과목 계층 depth 추론 (전 산업 범용) ──
@@ -1215,11 +1217,49 @@ function parseAuditNum(s: string): number {
   return negative ? -val : val;
 }
 
+// 회계기준 감지 — K-IFRS 토큰 1+ → K-IFRS, 그 외 K-GAAP 토큰 3+ → K-GAAP, 나머지 unknown.
+// K-IFRS 토큰은 매우 특이적이라 신뢰 가능. K-GAAP 토큰은 일부가 K-IFRS에서도 나타날 수 있어
+// 보수적 임계값(3+) 사용 — 효성중공업처럼 사채 관련 계정이 많은 K-IFRS 회사 오분류 방지.
+type AccountingStandard = "K-IFRS" | "K-GAAP" | "unknown";
+function detectAccountingStandard(bsRows: FinancialRow[], isRows: FinancialRow[]): AccountingStandard {
+  const KIFRS_TOKENS = [
+    "기타포괄손익-공정가치측정",
+    "당기손익-공정가치측정",
+    "사용권자산",
+    "확정급여부채",
+    "확정급여자산",
+    "관계기업및공동기업투자",
+    "기타포괄손익누계액",
+    "이익잉여금(결손금)",
+    "리스부채",
+  ];
+  const KGAAP_TOKENS = [
+    "전환권조정",
+    "사채상환할증금",
+    "감가상각누계액",
+    "대손충당금",
+    "미처분이익잉여금",
+    "미처리결손금",
+    "자본조정",
+    "주식발행초과금",
+  ];
+  let kifrsHits = 0;
+  let kgaapHits = 0;
+  for (const row of [...bsRows, ...isRows]) {
+    const acct = (row.account || "").replace(/\s/g, "");
+    for (const tok of KIFRS_TOKENS) if (acct.includes(tok)) { kifrsHits++; break; }
+    for (const tok of KGAAP_TOKENS) if (acct.includes(tok)) { kgaapHits++; break; }
+  }
+  if (kifrsHits >= 1) return "K-IFRS";
+  if (kgaapHits >= 3) return "K-GAAP";
+  return "unknown";
+}
+
 // 감사보고서 XML 1건 파싱 (공통 로직)
 async function parseOneAuditXml(
   rceptNo: string,
   targetYear: string
-): Promise<{ bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; years: string[]; notesSections?: Record<string, string> } | null> {
+): Promise<{ bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; years: string[]; notesSections?: Record<string, string>; accountingStandard: AccountingStandard } | null> {
   const apiKey = getApiKey();
   try {
     const params = new URLSearchParams({ crtfc_key: apiKey, rcept_no: rceptNo });
@@ -1431,13 +1471,18 @@ async function parseOneAuditXml(
 
     // 감사보고서 주석 섹션 추출 (이미 메모리에 있는 content 사용)
     const notesSections = extractNoteSections(content);
+    const bsRows = extractTwoYears(bsItems, targetYear, prevYear, columnOrderReversed);
+    const isRows = extractTwoYears(isItems, targetYear, prevYear, columnOrderReversed);
+    const cfRows = extractTwoYears(cfItems, targetYear, prevYear, columnOrderReversed);
+    const accountingStandard = detectAccountingStandard(bsRows, isRows);
 
     return {
-      bsRows: extractTwoYears(bsItems, targetYear, prevYear, columnOrderReversed),
-      isRows: extractTwoYears(isItems, targetYear, prevYear, columnOrderReversed),
-      cfRows: extractTwoYears(cfItems, targetYear, prevYear, columnOrderReversed),
+      bsRows,
+      isRows,
+      cfRows,
       years: [targetYear, prevYear],
       notesSections: Object.keys(notesSections).length > 0 ? notesSections : undefined,
+      accountingStandard,
     };
   } catch (e) {
     console.error(`[DART] ${targetYear}년 감사보고서 파싱 실패:`, e);
@@ -1501,11 +1546,12 @@ function extractNoteSections(htmlContent: string): Record<string, string> {
   return notes;
 }
 
-// 연도별 파싱 결과 병합
+// 연도별 파싱 결과 병합. 회계기준 충돌 시 parsed drop (false 반환).
+// fetchAuditReportData가 reverse-chronological 처리하므로 첫(=최신) 보고서 기준이 채택됨.
 function mergeAuditResults(
-  accumulated: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; dataYears: string[] },
-  parsed: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; years: string[] }
-): void {
+  accumulated: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; dataYears: string[]; accountingStandard?: AccountingStandard },
+  parsed: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; years: string[]; accountingStandard?: AccountingStandard }
+): boolean {
   function mergeRows(accRows: FinancialRow[], newRows: FinancialRow[], years: string[]) {
     // 같은 계정명이 여러 번 나올 수 있으므로 occurrence 카운트로 매칭
     const usedIndices = new Set<number>();
@@ -1541,7 +1587,16 @@ function mergeAuditResults(
     accumulated.bsRows = parsed.bsRows;
     accumulated.isRows = parsed.isRows;
     accumulated.cfRows = parsed.cfRows;
+    accumulated.accountingStandard = parsed.accountingStandard;
   } else {
+    // 회계기준 충돌 검사 — 둘 다 unknown이 아니고 다르면 parsed drop.
+    // (이전 보고서의 K-GAAP 데이터는 최신 K-IFRS 보고서의 prev_yr 영역에서 K-IFRS 표준으로 채워짐)
+    const accStd = accumulated.accountingStandard;
+    const parStd = parsed.accountingStandard;
+    if (accStd && accStd !== "unknown" && parStd && parStd !== "unknown" && accStd !== parStd) {
+      console.warn(`[DART] 회계기준 변경 감지 — accumulated=${accStd}, parsed=${parStd} (${parsed.years.join(",")}). 이전 보고서 drop.`);
+      return false;
+    }
     mergeRows(accumulated.bsRows, parsed.bsRows, parsed.years);
     mergeRows(accumulated.isRows, parsed.isRows, parsed.years);
     mergeRows(accumulated.cfRows, parsed.cfRows, parsed.years);
@@ -1549,12 +1604,14 @@ function mergeAuditResults(
   for (const y of parsed.years) {
     if (!accumulated.dataYears.includes(y)) accumulated.dataYears.push(y);
   }
+  return true;
 }
 
 interface AuditReportResult {
-  ofs: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; dataYears: string[] } | null;
-  cfs: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; dataYears: string[] } | null;
+  ofs: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; dataYears: string[]; accountingStandard?: AccountingStandard } | null;
+  cfs: { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; dataYears: string[]; accountingStandard?: AccountingStandard } | null;
   notesSections?: Record<string, string>;
+  accountingStandardChanged?: boolean; // 회계기준 변경 감지 — UI 토스트/경고용
 }
 
 async function fetchAuditReportData(
@@ -1659,12 +1716,14 @@ async function fetchAuditReportData(
 
   // 주석 섹션 병합 (최신 연도 우선)
   const mergedNotes: Record<string, string> = {};
+  let accountingStandardChanged = false;
 
   if (ofsEntries.length) {
-    const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], cfRows: [] as FinancialRow[], dataYears: [] as string[] };
+    const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], cfRows: [] as FinancialRow[], dataYears: [] as string[], accountingStandard: undefined as AccountingStandard | undefined };
     for (const parsed of ofsEntries) {
       if (parsed) {
-        mergeAuditResults(acc, parsed);
+        const merged = mergeAuditResults(acc, parsed);
+        if (!merged) accountingStandardChanged = true;
         // 주석 병합 (최신 연도가 먼저 처리되므로 기존 키 보존)
         if (parsed.notesSections) {
           for (const [k, v] of Object.entries(parsed.notesSections)) {
@@ -1679,10 +1738,11 @@ async function fetchAuditReportData(
     }
   }
   if (cfsEntries.length) {
-    const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], cfRows: [] as FinancialRow[], dataYears: [] as string[] };
+    const acc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], cfRows: [] as FinancialRow[], dataYears: [] as string[], accountingStandard: undefined as AccountingStandard | undefined };
     for (const parsed of cfsEntries) {
       if (parsed) {
-        mergeAuditResults(acc, parsed);
+        const merged = mergeAuditResults(acc, parsed);
+        if (!merged) accountingStandardChanged = true;
         if (parsed.notesSections) {
           for (const [k, v] of Object.entries(parsed.notesSections)) {
             if (!mergedNotes[k]) mergedNotes[k] = v;
@@ -1700,6 +1760,7 @@ async function fetchAuditReportData(
     ofs: ofsResult,
     cfs: cfsResult,
     notesSections: Object.keys(mergedNotes).length > 0 ? mergedNotes : undefined,
+    accountingStandardChanged: accountingStandardChanged || undefined,
   };
 }
 
@@ -2276,6 +2337,11 @@ export async function buildFinancialData(
     // 주석 섹션 전달
     if (auditResult.notesSections) {
       result.notesSections = auditResult.notesSections;
+    }
+
+    // 회계기준 변경 감지 플래그 전달 (K-IFRS↔K-GAAP)
+    if (auditResult.accountingStandardChanged) {
+      result.accountingStandardChanged = true;
     }
 
     if (result.hasData) {
