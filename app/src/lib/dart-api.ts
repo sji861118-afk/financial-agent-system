@@ -707,6 +707,31 @@ function buildStatements(
     accountOrder.push(...reordered);
   }
 
+  // K-IFRS/K-GAAP 동시 누적 차단 — Stage 1 (fnlttSinglAcntAll) path 보강.
+  // mergeAuditResults는 Stage 3 감사보고서에만 적용. 회사가 회계기준 전환했을 때
+  // (코넥스→코스닥, 프로젠) Stage 1로 들어온 23년 K-GAAP 보고서 라인이 24/25년
+  // K-IFRS 라인과 같은 시트에 누적되는 케이스 방지. yearData 검사로 압도적
+  // K-IFRS이면 K-GAAP-only 토큰이 든 라인 drop.
+  if (isBS && accountOrder.length > 0) {
+    const stdRows: FinancialRow[] = accountOrder.map(item => {
+      const r: FinancialRow = { account: item.nm, depth: item.depth };
+      for (const y of displayYears) {
+        if (yearData[y] && yearData[y][item.nm]) r[y] = yearData[y][item.nm];
+      }
+      return r;
+    });
+    const std = detectAccountingStandard(stdRows, []);
+    if (std === "K-IFRS") {
+      const before = accountOrder.length;
+      const filtered = accountOrder.filter(item => !KGAAP_ONLY_PATTERN.test(item.nm.replace(/\s/g, "")));
+      if (filtered.length < before) {
+        console.log(`[DART] Stage 1 K-IFRS 판정 — K-GAAP 전용 라인 ${before - filtered.length}개 drop`);
+        accountOrder.length = 0;
+        accountOrder.push(...filtered);
+      }
+    }
+  }
+
   // 합계 감지: 금액 합산으로 부모-자식 관계 자동 보정
   refineDepthBySumDetection(accountOrder, yearData, displayYears);
 
@@ -1239,41 +1264,26 @@ function parseAuditNum(s: string): number {
   return negative ? -val : val;
 }
 
-// 회계기준 감지 — K-IFRS 토큰 1+ → K-IFRS, 그 외 K-GAAP 토큰 3+ → K-GAAP, 나머지 unknown.
-// K-IFRS 토큰은 매우 특이적이라 신뢰 가능. K-GAAP 토큰은 일부가 K-IFRS에서도 나타날 수 있어
-// 보수적 임계값(3+) 사용 — 효성중공업처럼 사채 관련 계정이 많은 K-IFRS 회사 오분류 방지.
+// 회계기준 감지 — 토큰 등장 row 수의 비율로 판정.
+// K-IFRS 1+/K-GAAP 0~2 → K-IFRS, K-GAAP 3+ 압도 → K-GAAP, 그 외 unknown.
+// 단순 "K-IFRS 토큰 1+" 휴리스틱은 K-GAAP 보고서가 정정공시로 일부 K-IFRS 라벨을
+// 차용한 케이스(프로젠 23년 K-GAAP에 "당기손익-공정가치측정금융자산" 등장)를 잡지 못해
+// 회계기준 변경 감지 실패 → BS에 K-GAAP 라인 누적. 비율로 압도성을 본다.
 type AccountingStandard = "K-IFRS" | "K-GAAP" | "unknown";
+const KGAAP_ONLY_PATTERN = /전환권조정|사채상환할증금|감가상각누계액|대손충당금|미처리결손금|미처분이익잉여금|자본조정|주식발행초과금|매도가능증권|지분법적용투자주식|당좌자산|단기매매증권|장기미수금/;
+const KIFRS_ONLY_PATTERN = /기타포괄손익-공정가치측정|당기손익-공정가치측정|사용권자산|확정급여부채|확정급여자산|관계기업및공동기업투자|기타포괄손익누계액|이익잉여금\(결손금\)|리스부채/;
 function detectAccountingStandard(bsRows: FinancialRow[], isRows: FinancialRow[]): AccountingStandard {
-  const KIFRS_TOKENS = [
-    "기타포괄손익-공정가치측정",
-    "당기손익-공정가치측정",
-    "사용권자산",
-    "확정급여부채",
-    "확정급여자산",
-    "관계기업및공동기업투자",
-    "기타포괄손익누계액",
-    "이익잉여금(결손금)",
-    "리스부채",
-  ];
-  const KGAAP_TOKENS = [
-    "전환권조정",
-    "사채상환할증금",
-    "감가상각누계액",
-    "대손충당금",
-    "미처분이익잉여금",
-    "미처리결손금",
-    "자본조정",
-    "주식발행초과금",
-  ];
   let kifrsHits = 0;
   let kgaapHits = 0;
   for (const row of [...bsRows, ...isRows]) {
     const acct = (row.account || "").replace(/\s/g, "");
-    for (const tok of KIFRS_TOKENS) if (acct.includes(tok)) { kifrsHits++; break; }
-    for (const tok of KGAAP_TOKENS) if (acct.includes(tok)) { kgaapHits++; break; }
+    if (KIFRS_ONLY_PATTERN.test(acct)) kifrsHits++;
+    if (KGAAP_ONLY_PATTERN.test(acct)) kgaapHits++;
   }
-  if (kifrsHits >= 1) return "K-IFRS";
-  if (kgaapHits >= 3) return "K-GAAP";
+  // K-GAAP 토큰이 K-IFRS의 2배 이상 + 절대값 3+ → K-GAAP (정정공시 잡음 무시)
+  if (kgaapHits >= 3 && kgaapHits >= 2 * kifrsHits) return "K-GAAP";
+  // K-IFRS 토큰 1+ + K-GAAP 토큰 0~2 → K-IFRS
+  if (kifrsHits >= 1 && kgaapHits < 3) return "K-IFRS";
   return "unknown";
 }
 
