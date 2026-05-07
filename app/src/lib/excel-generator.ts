@@ -414,6 +414,37 @@ function statementValue(row: StatementItem | undefined, year: string): string {
   return String(v);
 }
 
+function statementNumber(row: StatementItem | undefined, year: string): number | null {
+  if (!row) return null;
+  const v = row[year];
+  if (v === undefined || v === null || v === "" || v === "-") return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const s = String(v).trim();
+  const negative = s.startsWith("(") && s.endsWith(")");
+  const cleaned = s.replace(/[(),\s]/g, "");
+  const n = parseFloat(cleaned);
+  if (!Number.isFinite(n)) return null;
+  return negative ? -n : n;
+}
+
+function ratioValueNumber(valStr: string | undefined): number | null {
+  if (!valStr || valStr === "-") return null;
+  const cleaned = String(valStr).replace(/[%,회배\s]/g, "");
+  const n = parseFloat(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+function colLetter(col: number): string {
+  let s = "";
+  let n = col;
+  while (n > 0) {
+    const m = (n - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
 function dashboardSectionHeader(ws: ExcelJS.Worksheet, rowNum: number, label: string, lastCol: number) {
   ws.mergeCells(rowNum, 1, rowNum, lastCol);
   const c = ws.getCell(rowNum, 1);
@@ -424,10 +455,10 @@ function dashboardSectionHeader(ws: ExcelJS.Worksheet, rowNum: number, label: st
   ws.getRow(rowNum).height = 24;
 }
 
-function ratioRiskFill(level: string): ExcelJS.FillPattern | undefined {
-  if (level === "양호") return GOOD_FILL;
-  if (level === "보통") return WARN_FILL;
-  if (level === "주의") return DANGER_FILL;
+function ratioVsBenchmarkFill(vs: string): ExcelJS.FillPattern | undefined {
+  if (vs === "양호") return GOOD_FILL;
+  if (vs === "보통") return WARN_FILL;
+  if (vs === "주의") return DANGER_FILL;
   return undefined;
 }
 
@@ -558,6 +589,7 @@ function createDashboardSheet(wb: ExcelJS.Workbook, data: ExcelReportData): void
     { label: "영업이익", aliases: ["영업이익", "영업손실", "영업이익(손실)", "영업손익"] },
     { label: "당기순이익", aliases: ["당기순이익", "당기순손실", "당기순이익(손실)", "당기순손익", "연결당기순이익"] },
   ];
+  const trendRowStart = row;
   for (const t of trendItems) {
     const r = findStatementRow(isItems, t.aliases);
     ws.getCell(row, 1).value = t.label;
@@ -566,12 +598,40 @@ function createDashboardSheet(wb: ExcelJS.Workbook, data: ExcelReportData): void
     ws.getCell(row, 1).fill = LABEL_FILL;
     sortedYears.forEach((y, i) => {
       const c = ws.getCell(row, 2 + i);
-      c.value = statementValue(r, y);
+      const num = statementNumber(r, y);
+      if (num !== null) {
+        c.value = num;
+        c.numFmt = "#,##0";
+      } else {
+        c.value = statementValue(r, y);
+      }
       c.font = NORMAL_FONT;
       c.alignment = RIGHT_ALIGN;
     });
     for (let c = 1; c <= 1 + sortedYears.length; c++) ws.getCell(row, c).border = THIN_BORDER;
     row += 1;
+  }
+  // 데이터바: 손익 추이 각 행의 연도 셀에 막대 그래프
+  if (sortedYears.length > 0) {
+    const lastCol = colLetter(1 + sortedYears.length);
+    const trendBarColors: Array<{ ref: string; color: string }> = [
+      { ref: `B${trendRowStart}:${lastCol}${trendRowStart}`, color: "FF3B82F6" },           // 매출 — 파랑
+      { ref: `B${trendRowStart + 1}:${lastCol}${trendRowStart + 1}`, color: "FF10B981" },   // 영업이익 — 녹색
+      { ref: `B${trendRowStart + 2}:${lastCol}${trendRowStart + 2}`, color: "FFF59E0B" },   // 당기순이익 — 주황
+    ];
+    for (const { ref, color } of trendBarColors) {
+      ws.addConditionalFormatting({
+        ref,
+        rules: [{
+          type: "dataBar",
+          priority: 1,
+          cfvo: [{ type: "min" }, { type: "max" }],
+          showValue: true,
+          gradient: false,
+          color: { argb: color },
+        } as ExcelJS.DataBarRuleType & { color: { argb: string } }],
+      });
+    }
   }
   row += 1;
 
@@ -584,21 +644,48 @@ function createDashboardSheet(wb: ExcelJS.Workbook, data: ExcelReportData): void
       { label: "재무활동", aliases: ["재무활동현금흐름", "재무활동으로인한현금흐름", "재무활동순현금흐름"] },
       { label: "현금 순증감", aliases: ["현금및현금성자산의순증감", "현금의증감", "현금및현금성자산의증감"] },
     ];
+    const cfStart = row;
     for (const c of cfRows) {
       const r = findStatementRow(cfItems, c.aliases);
       ws.getCell(row, 1).value = c.label;
       ws.getCell(row, 1).font = SECTION_FONT;
       ws.getCell(row, 1).fill = LABEL_FILL;
       ws.getCell(row, 1).alignment = LEFT_ALIGN;
-      ws.mergeCells(row, 2, row, LAST_COL);
-      const v = statementValue(r, latestYear);
+      const num = statementNumber(r, latestYear);
       const valCell = ws.getCell(row, 2);
-      valCell.value = v;
+      if (num !== null) {
+        valCell.value = num;
+        valCell.numFmt = "#,##0";
+      } else {
+        valCell.value = statementValue(r, latestYear);
+      }
       valCell.font = NORMAL_FONT;
       valCell.alignment = RIGHT_ALIGN;
-      for (let c2 = 1; c2 <= LAST_COL; c2++) ws.getCell(row, c2).border = THIN_BORDER;
+      // 음수면 빨강, 양수면 녹색
+      if (num !== null) {
+        valCell.font = { ...NORMAL_FONT, color: { argb: num < 0 ? "FFB91C1C" : "FF15803D" }, bold: true };
+      }
+      // 빈 칸은 LAST_COL까지 테두리만
+      for (let c2 = 3; c2 <= LAST_COL; c2++) {
+        const blank = ws.getCell(row, c2);
+        blank.border = THIN_BORDER;
+      }
+      ws.getCell(row, 1).border = THIN_BORDER;
+      ws.getCell(row, 2).border = THIN_BORDER;
       row += 1;
     }
+    // 현금흐름 4행 데이터바 (음수도 표시)
+    ws.addConditionalFormatting({
+      ref: `B${cfStart}:B${cfStart + cfRows.length - 1}`,
+      rules: [{
+        type: "dataBar",
+        priority: 2,
+        cfvo: [{ type: "min" }, { type: "max" }],
+        showValue: true,
+        gradient: false,
+        color: { argb: "FF10B981" },
+      } as ExcelJS.DataBarRuleType & { color: { argb: string } }],
+    });
     row += 1;
   }
 
@@ -612,8 +699,8 @@ function createDashboardSheet(wb: ExcelJS.Workbook, data: ExcelReportData): void
       ["성장성", a.growth || []],
       ["활동성", a.activity || []],
     ];
-    // header
-    const headers = ["카테고리", "지표", ...sortedYears.map((y) => `${y}년`), "벤치마크", "평가"];
+    // header — 카테고리 / 지표 / 연도들 / 업종평균 / 추이 / 판정
+    const headers = ["카테고리", "지표", ...sortedYears.map((y) => `${y}년`), "업종평균", "추이", "판정"];
     headers.forEach((h, i) => {
       const c = ws.getCell(row, i + 1);
       c.value = h;
@@ -625,9 +712,13 @@ function createDashboardSheet(wb: ExcelJS.Workbook, data: ExcelReportData): void
     ws.getRow(row).height = 22;
     row += 1;
 
+    const ratioFirstDataRow = row;
     for (const [catName, ratios] of ratioCategories) {
       if (!ratios.length) continue;
       ratios.forEach((r, idx) => {
+        const benchCol = 3 + sortedYears.length;
+        const trendCol = 3 + sortedYears.length + 1;
+        const judgeCol = 3 + sortedYears.length + 2;
         const cells: Array<{ col: number; value: string | number; align?: Partial<ExcelJS.Alignment> }> = [
           { col: 1, value: idx === 0 ? catName : "", align: CENTER_ALIGN },
           { col: 2, value: r.name, align: LEFT_ALIGN },
@@ -635,8 +726,9 @@ function createDashboardSheet(wb: ExcelJS.Workbook, data: ExcelReportData): void
         sortedYears.forEach((y, i) => {
           cells.push({ col: 3 + i, value: r.valuesStr[y] || "-", align: RIGHT_ALIGN });
         });
-        cells.push({ col: 3 + sortedYears.length, value: r.benchmark || "-", align: RIGHT_ALIGN });
-        cells.push({ col: 3 + sortedYears.length + 1, value: r.riskLevel || "-", align: CENTER_ALIGN });
+        cells.push({ col: benchCol, value: r.benchmark || "-", align: RIGHT_ALIGN });
+        cells.push({ col: trendCol, value: `${r.trendIcon || ""} ${r.trend || ""}`.trim() || "-", align: CENTER_ALIGN });
+        cells.push({ col: judgeCol, value: r.vsBenchmark || "-", align: CENTER_ALIGN });
         cells.forEach(({ col, value, align }) => {
           const cell = ws.getCell(row, col);
           cell.value = value;
@@ -649,15 +741,16 @@ function createDashboardSheet(wb: ExcelJS.Workbook, data: ExcelReportData): void
           ws.getCell(row, 1).fill = CATEGORY_HEADER_FILL;
           ws.getCell(row, 1).font = SECTION_FONT;
         }
-        // risk level fill
-        const riskFill = ratioRiskFill(r.riskLevel);
-        if (riskFill) {
-          ws.getCell(row, 3 + sortedYears.length + 1).fill = riskFill;
-          ws.getCell(row, 3 + sortedYears.length + 1).font = { ...NORMAL_FONT, bold: true };
+        // 판정 fill — vsBenchmark 양호/보통/주의 색상
+        const vsFill = ratioVsBenchmarkFill(r.vsBenchmark);
+        if (vsFill) {
+          ws.getCell(row, judgeCol).fill = vsFill;
+          ws.getCell(row, judgeCol).font = { ...NORMAL_FONT, bold: true };
         }
         row += 1;
       });
     }
+    void ratioFirstDataRow;
     row += 1;
   }
 
