@@ -28,11 +28,49 @@ export interface RatioDetail {
   category: string;
   valuesStr: Record<string, string>;
   benchmark: string;
+  benchmarkLabel?: string;  // "업종 평균 5.0배" — 단위 포함 표시용
   trend: string;
   trendIcon: string;
   vsBenchmark: string;
   diagnosis: string;
   riskLevel: string;
+}
+
+/**
+ * 비율 문자열을 Excel 셀 값+포맷으로 변환.
+ * "209.0%" → { value: 209.0, numFmt: '0.0"%"' }
+ * "1.6배" → { value: 1.6, numFmt: '0.00"배"' }
+ * "12.13회" → { value: 12.13, numFmt: '0.00"회"' }
+ * "1,234,567" → { value: 1234567, numFmt: '#,##0' }
+ * "-" / "" → { value: "-" } (raw text)
+ */
+function parseRatioValueForExcel(valStr: string | undefined): { value: number | string; numFmt?: string } {
+  if (!valStr) return { value: "-" };
+  const s = String(valStr).trim();
+  if (!s || s === "-") return { value: "-" };
+
+  if (s.endsWith("%")) {
+    const n = parseFloat(s.replace(/[%,\s]/g, ""));
+    if (!isNaN(n)) return { value: n, numFmt: '0.0"%"' };
+    return { value: s };
+  }
+  if (s.endsWith("배")) {
+    const n = parseFloat(s.replace(/[배,\s]/g, ""));
+    if (!isNaN(n)) return { value: n, numFmt: '0.00"배"' };
+    return { value: s };
+  }
+  if (s.endsWith("회")) {
+    const n = parseFloat(s.replace(/[회,\s]/g, ""));
+    if (!isNaN(n)) return { value: n, numFmt: '0.00"회"' };
+    return { value: s };
+  }
+  // 숫자만 (콤마 포함)
+  const cleaned = s.replace(/[,\s]/g, "");
+  const negative = cleaned.startsWith("(") && cleaned.endsWith(")");
+  const numStr = negative ? cleaned.slice(1, -1) : cleaned;
+  const n = parseFloat(numStr);
+  if (!isNaN(n)) return { value: negative ? -n : n, numFmt: "#,##0" };
+  return { value: s };
 }
 
 export interface FinancialAnalysis {
@@ -719,33 +757,54 @@ function createDashboardSheet(wb: ExcelJS.Workbook, data: ExcelReportData): void
         const benchCol = 3 + sortedYears.length;
         const trendCol = 3 + sortedYears.length + 1;
         const judgeCol = 3 + sortedYears.length + 2;
-        const cells: Array<{ col: number; value: string | number; align?: Partial<ExcelJS.Alignment> }> = [
-          { col: 1, value: idx === 0 ? catName : "", align: CENTER_ALIGN },
-          { col: 2, value: r.name, align: LEFT_ALIGN },
-        ];
+
+        // 카테고리 / 지표
+        ws.getCell(row, 1).value = idx === 0 ? catName : "";
+        ws.getCell(row, 1).alignment = CENTER_ALIGN;
+        ws.getCell(row, 1).font = idx === 0 ? SECTION_FONT : NORMAL_FONT;
+        ws.getCell(row, 1).border = THIN_BORDER;
+        if (idx === 0) ws.getCell(row, 1).fill = CATEGORY_HEADER_FILL;
+
+        ws.getCell(row, 2).value = r.name;
+        ws.getCell(row, 2).font = NORMAL_FONT;
+        ws.getCell(row, 2).alignment = LEFT_ALIGN;
+        ws.getCell(row, 2).border = THIN_BORDER;
+
+        // 연도 셀 — % / 배 / 회 단위 자동 처리 + 숫자 셀로 저장
         sortedYears.forEach((y, i) => {
-          cells.push({ col: 3 + i, value: r.valuesStr[y] || "-", align: RIGHT_ALIGN });
+          const parsed = parseRatioValueForExcel(r.valuesStr[y]);
+          const c = ws.getCell(row, 3 + i);
+          c.value = parsed.value;
+          if (parsed.numFmt) c.numFmt = parsed.numFmt;
+          c.font = NORMAL_FONT;
+          c.alignment = RIGHT_ALIGN;
+          c.border = THIN_BORDER;
         });
-        cells.push({ col: benchCol, value: r.benchmark || "-", align: RIGHT_ALIGN });
-        cells.push({ col: trendCol, value: `${r.trendIcon || ""} ${r.trend || ""}`.trim() || "-", align: CENTER_ALIGN });
-        cells.push({ col: judgeCol, value: r.vsBenchmark || "-", align: CENTER_ALIGN });
-        cells.forEach(({ col, value, align }) => {
-          const cell = ws.getCell(row, col);
-          cell.value = value;
-          cell.font = NORMAL_FONT;
-          cell.alignment = align ?? LEFT_ALIGN;
-          cell.border = THIN_BORDER;
-        });
-        // category cell highlight on first row
-        if (idx === 0) {
-          ws.getCell(row, 1).fill = CATEGORY_HEADER_FILL;
-          ws.getCell(row, 1).font = SECTION_FONT;
-        }
-        // 판정 fill — vsBenchmark 양호/보통/주의 색상
+
+        // 업종평균 — 단위 포함 라벨 우선
+        const bc = ws.getCell(row, benchCol);
+        bc.value = r.benchmarkLabel || r.benchmark || "-";
+        bc.font = SMALL_FONT;
+        bc.alignment = RIGHT_ALIGN;
+        bc.border = THIN_BORDER;
+
+        // 추이
+        const tc = ws.getCell(row, trendCol);
+        tc.value = `${r.trendIcon || ""} ${r.trend || ""}`.trim() || "-";
+        tc.font = NORMAL_FONT;
+        tc.alignment = CENTER_ALIGN;
+        tc.border = THIN_BORDER;
+
+        // 판정
+        const jc = ws.getCell(row, judgeCol);
+        jc.value = r.vsBenchmark || "-";
+        jc.font = NORMAL_FONT;
+        jc.alignment = CENTER_ALIGN;
+        jc.border = THIN_BORDER;
         const vsFill = ratioVsBenchmarkFill(r.vsBenchmark);
         if (vsFill) {
-          ws.getCell(row, judgeCol).fill = vsFill;
-          ws.getCell(row, judgeCol).font = { ...NORMAL_FONT, bold: true };
+          jc.fill = vsFill;
+          jc.font = { ...NORMAL_FONT, bold: true };
         }
         row += 1;
       });
@@ -1665,40 +1724,21 @@ function createAnalysisSheet(
       ws.getCell(row, col).border = THIN_BORDER;
       col += 1;
 
-      // Year values
+      // Year values — % / 배 / 회 / number 모두 처리
       for (const y of sortedYears) {
         const valStr = ra.valuesStr?.[y] ?? "-";
         const cell = ws.getCell(row, col);
-        const valString = String(valStr);
-        if (valString.endsWith("%")) {
-          const numStr = valString.replace(/%/g, "").replace(/,/g, "").trim();
-          const numVal = parseFloat(numStr);
-          if (!isNaN(numVal)) {
-            cell.value = numVal;
-            cell.numFmt = '0.0"%"';
-          } else {
-            cell.value = valStr;
-          }
-        } else if (valString !== "-") {
-          const numStr = valString.replace(/,/g, "").trim();
-          const numVal = parseFloat(numStr);
-          if (!isNaN(numVal)) {
-            cell.value = numVal;
-            cell.numFmt = "#,##0";
-          } else {
-            cell.value = valStr;
-          }
-        } else {
-          cell.value = valStr;
-        }
+        const parsed = parseRatioValueForExcel(valStr);
+        cell.value = parsed.value;
+        if (parsed.numFmt) cell.numFmt = parsed.numFmt;
         cell.font = NORMAL_FONT;
         cell.alignment = RIGHT_ALIGN;
         cell.border = THIN_BORDER;
         col += 1;
       }
 
-      // Benchmark
-      ws.getCell(row, col).value = ra.benchmark || "-";
+      // Benchmark — 단위 포함 라벨이 있으면 우선 사용
+      ws.getCell(row, col).value = ra.benchmarkLabel || ra.benchmark || "-";
       ws.getCell(row, col).font = SMALL_FONT;
       ws.getCell(row, col).alignment = RIGHT_ALIGN;
       ws.getCell(row, col).border = THIN_BORDER;
