@@ -394,92 +394,416 @@ function getVsBenchmarkFill(
 // Sheet creators
 // ============================================================
 
-function createSummarySheet(
-  wb: ExcelJS.Workbook,
-  data: ExcelReportData
-): void {
-  const ws = wb.addWorksheet("1.요약");
-  setColWidths(ws, { 1: 20, 2: 40, 3: 20, 4: 30 });
+// ============================================================
+// Dashboard sheet helpers
+// ============================================================
+
+function findStatementRow(items: StatementItem[] | undefined, aliases: string[]): StatementItem | undefined {
+  if (!items?.length) return undefined;
+  const normalized = aliases.map((a) => a.replace(/\s/g, ""));
+  return items.find((row) => {
+    const acc = (row.account || "").replace(/\s/g, "");
+    return normalized.some((a) => acc === a || acc.includes(a));
+  });
+}
+
+function statementValue(row: StatementItem | undefined, year: string): string {
+  if (!row) return "-";
+  const v = row[year];
+  if (v === undefined || v === null || v === "") return "-";
+  return String(v);
+}
+
+function dashboardSectionHeader(ws: ExcelJS.Worksheet, rowNum: number, label: string, lastCol: number) {
+  ws.mergeCells(rowNum, 1, rowNum, lastCol);
+  const c = ws.getCell(rowNum, 1);
+  c.value = `■ ${label}`;
+  c.font = { name: FONT_NAME, size: 12, bold: true, color: { argb: "FFFFFFFF" } };
+  c.fill = ANALYSIS_TITLE_FILL;
+  c.alignment = { horizontal: "left", vertical: "middle", indent: 1 };
+  ws.getRow(rowNum).height = 24;
+}
+
+function ratioRiskFill(level: string): ExcelJS.FillPattern | undefined {
+  if (level === "양호") return GOOD_FILL;
+  if (level === "보통") return WARN_FILL;
+  if (level === "주의") return DANGER_FILL;
+  return undefined;
+}
+
+function createDashboardSheet(wb: ExcelJS.Workbook, data: ExcelReportData): void {
+  const ws = wb.addWorksheet("1.대시보드", { views: [{ showGridLines: false }] });
+  ws.columns = [
+    { width: 18 }, { width: 16 }, { width: 16 }, { width: 16 },
+    { width: 14 }, { width: 12 }, { width: 12 }, { width: 26 },
+  ];
+  const LAST_COL = 8;
 
   let row = 1;
+  const ci = data.companyInfo;
+  const a = data.analysis;
+  const sortedYears = [...data.years].sort();
+  const latestYear = sortedYears[sortedYears.length - 1];
 
-  // Title
-  ws.getCell(row, 1).value = "여신승인신청서 - 재무현황 분석 결과";
-  ws.getCell(row, 1).font = TITLE_FONT;
-  row += 2;
-
-  // Company name
-  ws.getCell(row, 1).value = "기업명";
-  ws.getCell(row, 1).font = SECTION_FONT;
-  ws.getCell(row, 2).value = data.corpName;
-  ws.getCell(row, 2).font = NORMAL_FONT;
+  // ─── Title banner ───
+  ws.mergeCells(row, 1, row, LAST_COL);
+  const titleCell = ws.getCell(row, 1);
+  titleCell.value = `${data.corpName} · 재무 대시보드`;
+  titleCell.font = { name: FONT_NAME, size: 16, bold: true, color: { argb: "FFFFFFFF" } };
+  titleCell.fill = ANALYSIS_TITLE_FILL;
+  titleCell.alignment = { horizontal: "left", vertical: "middle", indent: 1 };
+  ws.getRow(row).height = 32;
   row += 1;
 
-  // Analysis date
-  ws.getCell(row, 1).value = "분석일자";
-  ws.getCell(row, 1).font = SECTION_FONT;
-  ws.getCell(row, 2).value = new Date().toISOString().split("T")[0];
-  ws.getCell(row, 2).font = NORMAL_FONT;
+  ws.mergeCells(row, 1, row, LAST_COL);
+  const subCell = ws.getCell(row, 1);
+  const fsType = a?.fsType ? ` · ${a.fsType}` : "";
+  const industry = a?.industryLabel ? ` · ${a.industryLabel}` : "";
+  const grade = a?.overallGrade && a.overallGrade !== "-" ? ` · 종합등급 ${a.overallGrade}` : "";
+  const period = sortedYears.length ? ` · ${sortedYears[0]}~${latestYear}` : "";
+  subCell.value = `분석일자 ${new Date().toISOString().split("T")[0]}${period}${fsType}${industry}${grade}`;
+  subCell.font = { ...SMALL_FONT, color: { argb: "FF555555" } };
+  subCell.alignment = { horizontal: "left", vertical: "middle", indent: 1 };
   row += 2;
 
-  // Extraction status table
-  const headers = ["항목", "추출 상태", "데이터 건수", "출처"];
-  headers.forEach((h, i) => {
-    ws.getCell(row, i + 1).value = h;
-  });
-  applyHeaderStyle(ws, row, 1, headers.length);
-  row += 1;
-
-  const bsOfsCount = data.bsItemsOfs?.length ?? 0;
-  const isOfsCount = data.isItemsOfs?.length ?? 0;
-  const bsCfsCount = data.bsItemsCfs?.length ?? 0;
-  const isCfsCount = data.isItemsCfs?.length ?? 0;
-
-  const items: [string, string, string, string][] = [
-    [
-      "재무상태표 (BS) [개별]",
-      data.hasOfs && bsOfsCount > 0 ? "추출완료" : "자료없음",
-      data.hasOfs && bsOfsCount > 0 ? `${bsOfsCount}개 항목` : "-",
-      data.hasOfs ? "DART Open API (금융감독원)" : "DART 데이터 없음",
-    ],
-    [
-      "손익계산서 (IS) [개별]",
-      data.hasOfs && isOfsCount > 0 ? "추출완료" : "자료없음",
-      data.hasOfs && isOfsCount > 0 ? `${isOfsCount}개 항목` : "-",
-      data.hasOfs ? "DART Open API (금융감독원)" : "DART 데이터 없음",
-    ],
-    [
-      "재무상태표 (BS) [연결]",
-      data.hasCfs && bsCfsCount > 0 ? "추출완료" : "자료없음",
-      data.hasCfs && bsCfsCount > 0 ? `${bsCfsCount}개 항목` : "-",
-      data.hasCfs ? "DART Open API (금융감독원)" : "연결재무제표 없음",
-    ],
-    [
-      "손익계산서 (IS) [연결]",
-      data.hasCfs && isCfsCount > 0 ? "추출완료" : "자료없음",
-      data.hasCfs && isCfsCount > 0 ? `${isCfsCount}개 항목` : "-",
-      data.hasCfs ? "DART Open API (금융감독원)" : "연결재무제표 없음",
-    ],
-    [
-      "재무분석",
-      data.analysis ? "분석완료" : "자료없음",
-      data.analysis ? "1건" : "-",
-      data.analysis ? "AI 기반 재무비율 분석" : "-",
-    ],
-  ];
-
-  for (const [itemName, status, count, source] of items) {
-    const isMissing = status.includes("자료없음");
-    ws.getCell(row, 1).value = itemName;
-    ws.getCell(row, 2).value = status;
-    ws.getCell(row, 3).value = count;
-    ws.getCell(row, 4).value = source;
-    applyDataStyle(ws, row, 1, 4, isMissing);
+  // ─── 기업 개요 ───
+  if (ci) {
+    dashboardSectionHeader(ws, row, "기업 개요", LAST_COL); row += 1;
+    const overviewFields: Array<[string, string]> = [
+      ["대표이사", ci.ceoNm || "-"],
+      ["법인구분", getCorpTypeLabel(ci.corpCls, ci.stockCode)],
+      ["법인 등록번호", ci.jurirNo || "-"],
+      ["사업자 등록번호", ci.bizrNo || "-"],
+      ["종목코드", ci.stockCode || "비상장"],
+      ["설립일자", formatEstDate(ci.estDt) || "-"],
+      ["산업 분류", getIndustryLabel(ci.indutyCode) || ci.indutyCode || "-"],
+      ["결산월", ci.accMt ? `${parseInt(ci.accMt, 10)}월` : "-"],
+    ];
+    for (let i = 0; i < overviewFields.length; i += 2) {
+      const [l1, v1] = overviewFields[i];
+      const [l2, v2] = overviewFields[i + 1] ?? ["", ""];
+      ws.getCell(row, 1).value = l1;
+      ws.getCell(row, 1).font = SECTION_FONT;
+      ws.getCell(row, 1).fill = LABEL_FILL;
+      ws.getCell(row, 1).alignment = LEFT_ALIGN;
+      ws.mergeCells(row, 2, row, 4);
+      ws.getCell(row, 2).value = v1;
+      ws.getCell(row, 2).font = NORMAL_FONT;
+      ws.getCell(row, 2).alignment = LEFT_ALIGN;
+      if (l2) {
+        ws.getCell(row, 5).value = l2;
+        ws.getCell(row, 5).font = SECTION_FONT;
+        ws.getCell(row, 5).fill = LABEL_FILL;
+        ws.getCell(row, 5).alignment = LEFT_ALIGN;
+        ws.mergeCells(row, 6, row, 8);
+        ws.getCell(row, 6).value = v2;
+        ws.getCell(row, 6).font = NORMAL_FONT;
+        ws.getCell(row, 6).alignment = LEFT_ALIGN;
+      }
+      for (let c = 1; c <= LAST_COL; c++) ws.getCell(row, c).border = THIN_BORDER;
+      ws.getRow(row).height = 20;
+      row += 1;
+    }
+    if (ci.adres) {
+      ws.getCell(row, 1).value = "회사 주소";
+      ws.getCell(row, 1).font = SECTION_FONT;
+      ws.getCell(row, 1).fill = LABEL_FILL;
+      ws.getCell(row, 1).alignment = LEFT_ALIGN;
+      ws.mergeCells(row, 2, row, LAST_COL);
+      ws.getCell(row, 2).value = ci.adres;
+      ws.getCell(row, 2).font = NORMAL_FONT;
+      ws.getCell(row, 2).alignment = LEFT_ALIGN;
+      for (let c = 1; c <= LAST_COL; c++) ws.getCell(row, c).border = THIN_BORDER;
+      ws.getRow(row).height = 20;
+      row += 1;
+    }
     row += 1;
   }
 
+  // ─── 종합 평가 ───
+  if (a?.overallSummary) {
+    dashboardSectionHeader(ws, row, `종합 평가 (등급 ${a.overallGrade})`, LAST_COL); row += 1;
+    ws.mergeCells(row, 1, row, LAST_COL);
+    const sumCell = ws.getCell(row, 1);
+    sumCell.value = a.overallSummary;
+    sumCell.font = NORMAL_FONT;
+    sumCell.alignment = { horizontal: "left", vertical: "top", wrapText: true, indent: 1 };
+    sumCell.fill = ANALYSIS_SECTION_FILL;
+    ws.getRow(row).height = 60;
+    row += 2;
+  }
+
+  // ─── 주요 손익 추이 ───
+  dashboardSectionHeader(ws, row, "주요 손익 추이 (단위: 백만원)", LAST_COL); row += 1;
+  // header
+  ws.getCell(row, 1).value = "계정";
+  ws.getCell(row, 1).font = HEADER_FONT;
+  ws.getCell(row, 1).fill = HEADER_FILL;
+  ws.getCell(row, 1).alignment = CENTER_ALIGN;
+  sortedYears.forEach((y, i) => {
+    const c = ws.getCell(row, 2 + i);
+    c.value = `${y}년`;
+    c.font = HEADER_FONT;
+    c.fill = HEADER_FILL;
+    c.alignment = CENTER_ALIGN;
+  });
+  for (let c = 1; c <= 1 + sortedYears.length; c++) ws.getCell(row, c).border = THIN_BORDER;
+  ws.getRow(row).height = 22;
   row += 1;
-  writeSourceNote(ws, row, 1, data.source || "DART Open API");
+
+  const isItems = data.hasOfs && data.isItemsOfs?.length ? data.isItemsOfs : data.isItemsCfs;
+  const cfItems = data.hasOfs && data.cfItemsOfs?.length ? data.cfItemsOfs : data.cfItemsCfs;
+  const trendItems: Array<{ label: string; aliases: string[] }> = [
+    { label: "매출액", aliases: ["매출액", "매출", "수익(매출액)", "영업수익", "매출수익"] },
+    { label: "영업이익", aliases: ["영업이익", "영업손실", "영업이익(손실)", "영업손익"] },
+    { label: "당기순이익", aliases: ["당기순이익", "당기순손실", "당기순이익(손실)", "당기순손익", "연결당기순이익"] },
+  ];
+  for (const t of trendItems) {
+    const r = findStatementRow(isItems, t.aliases);
+    ws.getCell(row, 1).value = t.label;
+    ws.getCell(row, 1).font = SECTION_FONT;
+    ws.getCell(row, 1).alignment = LEFT_ALIGN;
+    ws.getCell(row, 1).fill = LABEL_FILL;
+    sortedYears.forEach((y, i) => {
+      const c = ws.getCell(row, 2 + i);
+      c.value = statementValue(r, y);
+      c.font = NORMAL_FONT;
+      c.alignment = RIGHT_ALIGN;
+    });
+    for (let c = 1; c <= 1 + sortedYears.length; c++) ws.getCell(row, c).border = THIN_BORDER;
+    row += 1;
+  }
+  row += 1;
+
+  // ─── 현금흐름 (최신연도) ───
+  if (cfItems?.length) {
+    dashboardSectionHeader(ws, row, `현금흐름 (${latestYear} · 단위: 백만원)`, LAST_COL); row += 1;
+    const cfRows: Array<{ label: string; aliases: string[] }> = [
+      { label: "영업활동", aliases: ["영업활동현금흐름", "영업활동으로인한현금흐름", "영업활동순현금흐름"] },
+      { label: "투자활동", aliases: ["투자활동현금흐름", "투자활동으로인한현금흐름", "투자활동순현금흐름"] },
+      { label: "재무활동", aliases: ["재무활동현금흐름", "재무활동으로인한현금흐름", "재무활동순현금흐름"] },
+      { label: "현금 순증감", aliases: ["현금및현금성자산의순증감", "현금의증감", "현금및현금성자산의증감"] },
+    ];
+    for (const c of cfRows) {
+      const r = findStatementRow(cfItems, c.aliases);
+      ws.getCell(row, 1).value = c.label;
+      ws.getCell(row, 1).font = SECTION_FONT;
+      ws.getCell(row, 1).fill = LABEL_FILL;
+      ws.getCell(row, 1).alignment = LEFT_ALIGN;
+      ws.mergeCells(row, 2, row, LAST_COL);
+      const v = statementValue(r, latestYear);
+      const valCell = ws.getCell(row, 2);
+      valCell.value = v;
+      valCell.font = NORMAL_FONT;
+      valCell.alignment = RIGHT_ALIGN;
+      for (let c2 = 1; c2 <= LAST_COL; c2++) ws.getCell(row, c2).border = THIN_BORDER;
+      row += 1;
+    }
+    row += 1;
+  }
+
+  // ─── 재무비율 (전체 카테고리) ───
+  if (a) {
+    dashboardSectionHeader(ws, row, "재무비율 분석", LAST_COL); row += 1;
+
+    const ratioCategories: Array<[string, RatioDetail[]]> = [
+      ["안정성", a.stability || []],
+      ["수익성", a.profitability || []],
+      ["성장성", a.growth || []],
+      ["활동성", a.activity || []],
+    ];
+    // header
+    const headers = ["카테고리", "지표", ...sortedYears.map((y) => `${y}년`), "벤치마크", "평가"];
+    headers.forEach((h, i) => {
+      const c = ws.getCell(row, i + 1);
+      c.value = h;
+      c.font = HEADER_FONT;
+      c.fill = HEADER_FILL;
+      c.alignment = CENTER_ALIGN;
+      c.border = THIN_BORDER;
+    });
+    ws.getRow(row).height = 22;
+    row += 1;
+
+    for (const [catName, ratios] of ratioCategories) {
+      if (!ratios.length) continue;
+      ratios.forEach((r, idx) => {
+        const cells: Array<{ col: number; value: string | number; align?: Partial<ExcelJS.Alignment> }> = [
+          { col: 1, value: idx === 0 ? catName : "", align: CENTER_ALIGN },
+          { col: 2, value: r.name, align: LEFT_ALIGN },
+        ];
+        sortedYears.forEach((y, i) => {
+          cells.push({ col: 3 + i, value: r.valuesStr[y] || "-", align: RIGHT_ALIGN });
+        });
+        cells.push({ col: 3 + sortedYears.length, value: r.benchmark || "-", align: RIGHT_ALIGN });
+        cells.push({ col: 3 + sortedYears.length + 1, value: r.riskLevel || "-", align: CENTER_ALIGN });
+        cells.forEach(({ col, value, align }) => {
+          const cell = ws.getCell(row, col);
+          cell.value = value;
+          cell.font = NORMAL_FONT;
+          cell.alignment = align ?? LEFT_ALIGN;
+          cell.border = THIN_BORDER;
+        });
+        // category cell highlight on first row
+        if (idx === 0) {
+          ws.getCell(row, 1).fill = CATEGORY_HEADER_FILL;
+          ws.getCell(row, 1).font = SECTION_FONT;
+        }
+        // risk level fill
+        const riskFill = ratioRiskFill(r.riskLevel);
+        if (riskFill) {
+          ws.getCell(row, 3 + sortedYears.length + 1).fill = riskFill;
+          ws.getCell(row, 3 + sortedYears.length + 1).font = { ...NORMAL_FONT, bold: true };
+        }
+        row += 1;
+      });
+    }
+    row += 1;
+  }
+
+  // ─── 차입금 현황 ───
+  if (data.borrowingNotes && data.borrowingNotes.details.length > 0) {
+    const bn = data.borrowingNotes;
+    dashboardSectionHeader(ws, row, `차입금 현황 (${bn.fiscalYear})`, LAST_COL); row += 1;
+    const bHeaders = ["구분", "차입처", "이자율", "만기", "당기말", "전기말", "통화"];
+    bHeaders.forEach((h, i) => {
+      const c = ws.getCell(row, i + 1);
+      c.value = h;
+      c.font = HEADER_FONT;
+      c.fill = HEADER_FILL;
+      c.alignment = CENTER_ALIGN;
+      c.border = THIN_BORDER;
+    });
+    row += 1;
+    bn.details.slice(0, 12).forEach((d) => {
+      const vals = [d.category, d.lender, d.interestRate, d.maturityDate, d.currentAmount, d.previousAmount, d.currency || "-"];
+      vals.forEach((v, i) => {
+        const c = ws.getCell(row, i + 1);
+        c.value = v || "-";
+        c.font = NORMAL_FONT;
+        c.alignment = i >= 4 && i <= 5 ? RIGHT_ALIGN : (i >= 0 && i <= 1 ? LEFT_ALIGN : CENTER_ALIGN);
+        c.border = THIN_BORDER;
+      });
+      row += 1;
+    });
+    if (bn.details.length > 12) {
+      ws.getCell(row, 1).value = `※ 상위 12건 표시 · 전체 ${bn.details.length}건 (자세한 내역은 차입금내역 시트 참조)`;
+      ws.getCell(row, 1).font = SOURCE_FONT;
+      ws.mergeCells(row, 1, row, LAST_COL);
+      row += 1;
+    }
+    row += 1;
+  }
+
+  // ─── 주주 현황 ───
+  if (data.shareholders && data.shareholders.length > 0) {
+    dashboardSectionHeader(ws, row, "주주 현황 (Top 10)", LAST_COL); row += 1;
+    const sHeaders = ["주주명", "주식종류", "관계", "지분율(%)", "소유주식수", "비고"];
+    sHeaders.forEach((h, i) => {
+      const c = ws.getCell(row, i + 1);
+      c.value = h;
+      c.font = HEADER_FONT;
+      c.fill = HEADER_FILL;
+      c.alignment = CENTER_ALIGN;
+      c.border = THIN_BORDER;
+    });
+    ws.mergeCells(row, 6, row, LAST_COL);
+    row += 1;
+    data.shareholders.slice(0, 10).forEach((s) => {
+      const vals = [s.name, s.stockType, s.relation, s.shareRatio, s.shareCount, s.remark];
+      vals.forEach((v, i) => {
+        const c = ws.getCell(row, i + 1);
+        c.value = v || "-";
+        c.font = NORMAL_FONT;
+        c.alignment = i >= 3 && i <= 4 ? RIGHT_ALIGN : LEFT_ALIGN;
+        c.border = THIN_BORDER;
+      });
+      ws.mergeCells(row, 6, row, LAST_COL);
+      row += 1;
+    });
+    row += 1;
+  }
+
+  // ─── 감사인 의견 ───
+  if (data.auditOpinion) {
+    const ao = data.auditOpinion;
+    dashboardSectionHeader(ws, row, "감사인 의견", LAST_COL); row += 1;
+    const aoFields: Array<[string, string]> = [
+      ["감사인", ao.auditorName || "-"],
+      ["감사의견", ao.opinionType || "-"],
+      ["감사보고서일", ao.reportDate || "-"],
+      ["사업연도", ao.fiscalYear || "-"],
+    ];
+    aoFields.forEach(([l, v]) => {
+      ws.getCell(row, 1).value = l;
+      ws.getCell(row, 1).font = SECTION_FONT;
+      ws.getCell(row, 1).fill = LABEL_FILL;
+      ws.getCell(row, 1).alignment = LEFT_ALIGN;
+      ws.mergeCells(row, 2, row, LAST_COL);
+      ws.getCell(row, 2).value = v;
+      ws.getCell(row, 2).font = NORMAL_FONT;
+      ws.getCell(row, 2).alignment = LEFT_ALIGN;
+      for (let c = 1; c <= LAST_COL; c++) ws.getCell(row, c).border = THIN_BORDER;
+      row += 1;
+    });
+    row += 1;
+  }
+
+  // ─── 리스크 / 기회 요인 ───
+  if (a && (a.riskFactors?.length || a.opportunityFactors?.length)) {
+    dashboardSectionHeader(ws, row, "리스크 / 기회 요인", LAST_COL); row += 1;
+    const startRow = row;
+    // 리스크 (left half)
+    ws.getCell(row, 1).value = "▼ 리스크 요인";
+    ws.getCell(row, 1).font = { ...SECTION_FONT, color: { argb: "FFB91C1C" } };
+    ws.mergeCells(row, 1, row, 4);
+    ws.getCell(row, 1).fill = RISK_BG_FILL;
+    // 기회 (right half)
+    ws.getCell(row, 5).value = "▲ 기회 요인";
+    ws.getCell(row, 5).font = { ...SECTION_FONT, color: { argb: "FF15803D" } };
+    ws.mergeCells(row, 5, row, LAST_COL);
+    ws.getCell(row, 5).fill = OPPORTUNITY_BG_FILL;
+    row += 1;
+    const maxLen = Math.max(a.riskFactors?.length ?? 0, a.opportunityFactors?.length ?? 0);
+    for (let i = 0; i < maxLen; i++) {
+      const rf = a.riskFactors?.[i];
+      const of = a.opportunityFactors?.[i];
+      ws.mergeCells(row, 1, row, 4);
+      const lc = ws.getCell(row, 1);
+      lc.value = rf ? `• ${rf}` : "";
+      lc.font = NORMAL_FONT;
+      lc.alignment = { horizontal: "left", vertical: "top", wrapText: true, indent: 1 };
+      lc.fill = RISK_BG_FILL;
+      ws.mergeCells(row, 5, row, LAST_COL);
+      const rc = ws.getCell(row, 5);
+      rc.value = of ? `• ${of}` : "";
+      rc.font = NORMAL_FONT;
+      rc.alignment = { horizontal: "left", vertical: "top", wrapText: true, indent: 1 };
+      rc.fill = OPPORTUNITY_BG_FILL;
+      ws.getRow(row).height = 24;
+      row += 1;
+    }
+    void startRow;
+    row += 1;
+  }
+
+  // ─── 분석가 소견 ───
+  if (a?.analystOpinion) {
+    dashboardSectionHeader(ws, row, "분석가 소견", LAST_COL); row += 1;
+    ws.mergeCells(row, 1, row, LAST_COL);
+    const oc = ws.getCell(row, 1);
+    oc.value = a.analystOpinion;
+    oc.font = NORMAL_FONT;
+    oc.alignment = { horizontal: "left", vertical: "top", wrapText: true, indent: 1 };
+    oc.fill = ANALYSIS_SECTION_FILL;
+    ws.getRow(row).height = Math.min(180, Math.max(40, Math.ceil(a.analystOpinion.length / 60) * 18));
+    row += 2;
+  }
+
+  // ─── 출처 ───
+  ws.getCell(row, 1).value = `※ 출처: ${data.source || "DART Open API"} · 단위는 별도 표시한 부분 외 모두 백만원`;
+  ws.getCell(row, 1).font = SOURCE_FONT;
+  ws.mergeCells(row, 1, row, LAST_COL);
 }
 
 function getCorpTypeLabel(corpCls: string, stockCode: string): string {
@@ -1683,8 +2007,8 @@ export async function generateExcelReport(
   const cfCfsTabNum = data.hasCfs ? cfsTabBase + 1 : 0;
   const cfCfsSheetName = cfCfsAvailable ? `${cfCfsTabNum}.현금흐름표(연결)` : undefined;
 
-  // 1. Summary
-  createSummarySheet(wb, data);
+  // 1. Dashboard (대시보드 — 화면 차트 대시보드와 동일 구성)
+  createDashboardSheet(wb, data);
 
   // 2. BS Individual
   if (data.hasOfs) {
