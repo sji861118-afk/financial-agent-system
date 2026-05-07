@@ -500,6 +500,39 @@ function findItem(
   return null;
 }
 
+/**
+ * 매출액을 연도별로 추출 (fallback 포함):
+ *   1) 매출/매출액/영업수익 행 직접 추출
+ *   2) 위가 null/0이면 (매출총이익 + 매출원가)로 추정
+ *
+ * 프로젠 같이 K-IFRS↔K-GAAP 회계기준 변경 또는 보고서 분리로 매출액 행이
+ * 일부 연도에서 비어있는 경우, 매출총이익+매출원가가 그 연도에 존재하면
+ * 합으로 매출을 산출하여 종속 비율(영업이익률/매출증가율/회전율 등)이
+ * "-"로 누락되는 것을 방지.
+ */
+function getRevenueByYear(
+  isItems: Array<Record<string, string | number | undefined>>,
+  year: string
+): number | null {
+  const items = isItems as unknown as Array<Record<string, string>>;
+  const revItem = findItem(items, ["매출", "매출액", "영업수익", "수익(매출액)"]);
+  const direct = revItem ? parseAmount(revItem[year]) : null;
+  if (direct !== null && direct !== 0) return direct;
+
+  // Fallback: 매출총이익 + 매출원가
+  const grossItem = findItem(items, ["매출총이익", "매출총이익(손실)"]);
+  const cogsItem = findItem(items, ["매출원가"]);
+  const gross = grossItem ? parseAmount(grossItem[year]) : null;
+  const cogs = cogsItem ? parseAmount(cogsItem[year]) : null;
+  if (gross !== null && cogs !== null) {
+    const estimated = gross + Math.abs(cogs);
+    if (estimated !== 0) return estimated;
+  }
+  // 직접 추출은 0이지만 행은 존재하는 경우
+  if (direct === 0) return 0;
+  return null;
+}
+
 // ============================================================
 // 성장률 계산
 // ============================================================
@@ -516,7 +549,6 @@ function calcGrowthRatios(
 
   const growth: Record<string, Record<string, number | null>> = {};
 
-  const revenueItem = findItem(isItems, ["매출", "매출액", "영업수익", "수익(매출액)"]);
   const opIncomeItem = findItem(isItems, ["영업이익", "영업손익", "영업손실"]);
   const totalAssetsItem = findItem(bsItems, ["자산총계"]);
   const equityItem = findItem(bsItems, ["자본총계"]);
@@ -528,8 +560,16 @@ function calcGrowthRatios(
     const yPrev = sortedYears[i - 1];
     const yearGrowth: Record<string, number | null> = {};
 
+    // 매출액증가율: 연도별 fallback 사용 (매출총이익+매출원가 추정 포함)
+    const revCur = getRevenueByYear(isItems, yCur);
+    const revPrev = getRevenueByYear(isItems, yPrev);
+    if (revCur !== null && revPrev !== null && revPrev !== 0) {
+      yearGrowth["매출액증가율"] = ((revCur - revPrev) / Math.abs(revPrev)) * 100;
+    } else {
+      yearGrowth["매출액증가율"] = null;
+    }
+
     const pairs: [string, Record<string, string> | null][] = [
-      ["매출액증가율", revenueItem],
       ["영업이익증가율", opIncomeItem],
       ["총자산증가율", totalAssetsItem],
       ["자기자본증가율", equityItem],
@@ -567,7 +607,6 @@ function calcActivityRatios(
   const bsItems = fsType === "ofs" ? finData.bsItemsOfs : finData.bsItemsCfs;
   const isItems = fsType === "ofs" ? finData.isItemsOfs : finData.isItemsCfs;
 
-  const revenueItem = findItem(isItems, ["매출", "매출액", "영업수익", "수익(매출액)"]);
   const cogsItem = findItem(isItems, ["매출원가"]);
   const totalAssetsItem = findItem(bsItems, ["자산총계"]);
   const inventoryItem = findItem(bsItems, ["재고자산"]);
@@ -578,7 +617,8 @@ function calcActivityRatios(
   for (const y of [...years].sort()) {
     const yearData: Record<string, number | null> = {};
 
-    const revenue = revenueItem ? parseAmount(revenueItem[y]) : null;
+    // 매출: 직접추출이 비어있으면 매출총이익+매출원가로 추정
+    const revenue = getRevenueByYear(isItems, y);
     const cogs = cogsItem ? parseAmount(cogsItem[y]) : null;
     const totalAssets = totalAssetsItem ? parseAmount(totalAssetsItem[y]) : null;
     const inventory = inventoryItem ? parseAmount(inventoryItem[y]) : null;
@@ -624,7 +664,7 @@ function calcAdditionalRatios(
   const isItems = fsType === "ofs" ? finData.isItemsOfs : finData.isItemsCfs;
   const cfItems = (fsType === "ofs" ? finData.cfItemsOfs : finData.cfItemsCfs) || [];
 
-  const revenueItem = findItem(isItems, ["매출", "매출액", "영업수익", "수익(매출액)"]);
+  // 매출은 getRevenueByYear로 연도별 fallback 처리 (직접추출 → 매출총이익+매출원가)
   const grossProfitItem = findItem(isItems, ["매출총이익"]);
   const opIncomeItem = findItem(isItems, ["영업이익", "영업손익", "영업손실"]);
   const netIncomeItem = findItem(isItems, ["당기순이익", "당기순손익", "당기순손실", "분기순이익"]);
@@ -666,7 +706,7 @@ function calcAdditionalRatios(
   for (const y of [...years].sort()) {
     const yearData: Record<string, number | null> = {};
 
-    const revenue = revenueItem ? parseAmount(revenueItem[y]) : null;
+    const revenue = getRevenueByYear(isItems, y);
     const grossProfit = grossProfitItem ? parseAmount(grossProfitItem[y]) : null;
     const opIncome = opIncomeItem ? parseAmount(opIncomeItem[y]) : null;
     const netIncome = netIncomeItem ? parseAmount(netIncomeItem[y]) : null;

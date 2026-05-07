@@ -970,6 +970,16 @@ function calcRatios(
     if (rev === 0) rev = get(isRows, ["보험수익", "보험료수익", "수입보험료", "보험서비스수익"], year);
     // 금융업: 순영업수익/이자수익합계 → 매출 역할
     if (rev === 0) rev = get(isRows, ["순영업수익", "순영업수익합계", "영업수익합계", "이자수익합계", "순이자손익"], year);
+    // 프로젠 등 K-IFRS↔K-GAAP 전환 회사: 매출액 행이 일부 연도에서 비어있을 때
+    // 매출총이익 + 매출원가 = 매출 추정 (회계항등식)
+    if (rev === 0) {
+      const grossProfit = getExact(isRows, ["매출총이익", "매출총이익(손실)"], year);
+      const cogs = getExact(isRows, ["매출원가"], year);
+      if (grossProfit !== 0 || cogs !== 0) {
+        rev = grossProfit + Math.abs(cogs);
+        if (rev !== 0) console.log(`[calcRatios] ${year}년 매출 추정: 매출총이익(${grossProfit}) + 매출원가(${Math.abs(cogs)}) = ${rev}`);
+      }
+    }
     revByYear[year] = rev;
 
     let op = getExact(isRows, ["영업이익", "영업이익(손실)", "영업손익", "영업손실"], year);
