@@ -217,88 +217,76 @@ Track A(웹앱)는 범용 재무데이터 조회 도구이고, Track B(신청서
 - **Track C**: `appraisal-excel.ts` 1,449→343줄 슬림화. 레거시 `/api/appraisal/excel` 라우트는 시산가액/경매통계만 반환 (신규 기능은 `/api/appraisal/generate` 사용)
 
 ### 폴더 구조
+
 ```
 .
-├── README.md                          # 이 파일 (통합 프로젝트 문서)
-├── CLAUDE.md                          # Claude Code 프로젝트 지시사항
-├── AGENTS.md                          # Next.js 에이전트 규칙
-├── blueprint-financial-extraction.md  # 에이전트 시스템 설계서
+├── README.md                 # 통합 프로젝트 문서
+├── CLAUDE.md                 # Claude Code 프로젝트 지시사항 (slim)
+├── AGENTS.md                 # Next.js 에이전트 규칙
+├── CHANGELOG-DART.md         # Track A — DART 파싱 lessons
+├── CHANGELOG-EBITDA.md       # Track A — EBITDA / 재무비율 / Excel 셀 lessons
+├── CHANGELOG-APPRAISAL.md    # Track A — 감정평가서 lessons
+├── CHANGELOG-DEPLOY.md       # 인프라 — Vercel / deploy.sh lessons
 │
-├── app/                               # Track A+C. 재무분석 + 감정평가 웹앱 (Next.js 16)
+├── app/                      # ── Track A: 재무·감정평가 웹앱 (Next.js 16, Vercel)
 │   ├── src/
-│   │   ├── app/                       # App Router (페이지 + API)
-│   │   │   ├── api/dart/financial/    # 재무조회 API (+ QA 검수)
-│   │   │   ├── api/dart/merge/        # 병합 API (+ QA 검수)
-│   │   │   ├── api/upload/            # 파일 업로드 파서
-│   │   │   ├── api/appraisal/generate/# Track C 감정평가→Excel 생성 (신규)
-│   │   │   ├── appraisal/             # Track C 업로드 페이지 (신규)
-│   │   │   └── financial/             # 재무조회 페이지
-│   │   ├── components/ui/             # shadcn/ui 컴포넌트
-│   │   ├── lib/
-│   │   │   ├── agents/                # 에이전트 시스템
-│   │   │   │   ├── orchestrator.ts    # 오케스트레이터
-│   │   │   │   ├── data-collector.ts  # 데이터 수집 + 스냅샷
-│   │   │   │   ├── parser.ts          # 파싱/정규화
-│   │   │   │   ├── merger.ts          # 다중출처 병합
-│   │   │   │   ├── qa-verifier.ts     # 4단계 자동 검수
-│   │   │   │   ├── types.ts           # 공유 타입
-│   │   │   │   └── index.ts           # 모듈 export
-│   │   │   ├── appraisal/             # Track C 감정평가 자동화 (신규)
-│   │   │   │   ├── orchestrator.ts    # 감수→빌드 파이프라인
-│   │   │   │   ├── property-detector.ts # 물건유형 자동감지
-│   │   │   │   ├── parser-adapter.ts  # Partial→Complete 정규화
-│   │   │   │   ├── auditors/          # 2 감수 에이전트 + stats-helpers
-│   │   │   │   ├── sheet-builders/    # 5 시트 빌더
-│   │   │   │   └── property-templates/ # 3 유형별 템플릿
-│   │   │   ├── appraisal-parser.ts    # 감정평가서 PDF 파서 v2
-│   │   │   ├── appraisal-excel.ts     # 시산가액·경매통계 시트 (슬림화)
-│   │   │   ├── dart-api.ts            # DART 전자공시 API
-│   │   │   ├── financial-analyzer.ts  # 재무비율 분석 엔진
-│   │   │   ├── excel-generator.ts     # Excel 보고서 생성
-│   │   │   ├── rule-based-expert.ts   # 룰 기반 전문가 소견
-│   │   │   ├── nice-api.ts            # NICE 신용등급 API
-│   │   │   ├── fisis-api.ts           # FISIS 금융통계 API
-│   │   │   ├── firebase-admin.ts      # Firestore/Storage
-│   │   │   └── auth.ts                # 인증/권한/활동로그
-│   │   └── types/index.ts             # 공유 타입 정의
-│   └── public/                        # 정적 파일
+│   │   ├── app/              #    App Router (페이지 + API)
+│   │   ├── components/       #    UI (shadcn/ui)
+│   │   │   └── financial-dashboard/ # ─ /financial 차트 대시보드 (16 컴포넌트, recharts 3.x)
+│   │   ├── lib/              #    핵심 비즈니스 로직 (frozen — 기존 파일 수정 금지)
+│   │   │   ├── agents/       #     ─ 데이터수집·파싱·병합·QA 에이전트
+│   │   │   ├── appraisal/    #     ─ 감정평가서 자동화 v3
+│   │   │   ├── docx-v5/      #     ─ DOCX 생성 v5 (개발 중)
+│   │   │   ├── loan-engine/  #     ─ 여신신청서 엔진 + profiles
+│   │   │   └── *.ts          #     ─ dart-api, financial-analyzer, excel-generator 등
+│   │   └── types/
+│   ├── public/
+│   ├── scripts/deploy.sh     #    rsync → Vercel → 라우트 헬스체크 → 자동 롤백
+│   └── vercel.json           #    icn1 region pinned
 │
-├── docx-generator/                    # Track B. 여신신청서 DOCX 생성
-│   ├── _공통/                         # 에이전트 프롬프트 (공유)
-│   ├── _유형별_프롬프트/              # 대출유형별 플러그인
-│   ├── 01_입력데이터/                 # 입력 (JSON + Excel + 추가자료)
-│   └── 02_초안출력/                   # 출력 (DOCX)
+├── docx-generator/           # ── Track B: 신청서 작성 (Claude Code, 로컬 CLI)
+│   ├── 01_입력데이터/         #    deal JSON + 재무 xlsx
+│   ├── 02_초안출력/           #    {차주명}_초안.docx
+│   ├── _공통/                 #    FUTURE: planner.md / reviewer.md
+│   ├── _유형별_프롬프트/        #    FUTURE: subagents (지분담보·PF·미분양·사모사채)
+│   └── README.md             #    Track A 결합 문서화 (gitignored)
 │
-├── 여신심사_워크스페이스/             # Track B 에이전트 정의
-│   └── _공통/                         # planner, writer, reviewer 등
+├── docs/
+│   ├── superpowers/          # ── 진행 중 / 미정 plan + spec (STATUS 마커)
+│   ├── archive/              # ── 완료된 plan + spec
+│   │   └── completed-plans/  #     ─ INDEX.md 참조
+│   ├── _obsolete/            # ── stale 문서 (gitignored, 로컬 보존만)
+│   └── SKILLS-AUDIT.md       # ── 글로벌 스킬 사용 분석
 │
-├── docs/                              # 설계/기획 문서
-├── _archive/                          # 아카이브 (git 미포함)
-└── _reference/                        # 참고자료 (git 미포함)
+├── loan-app-next/            # Vercel 배포 미러 (gitignored, deploy.sh가 동기화)
+├── _archive/                 # 폐기 코드 (gitignored, 로컬 전용)
+└── _reference/               # 참고자료 (gitignored)
 ```
 
+
 ## Lessons Learned
-- 새 패키지 import 시 반드시 `npm install --save` 먼저 (Vercel에서 빌드 실패 방지)
-- 작동하는 코드를 수정할 때 원본 로직 보존, 새 로직은 try/catch fallback으로만 추가
-- 감사보고서 XML 주석번호("4,5,6,7")가 금액 정규식에 매칭 → 선 필터 필수
-- 감사보고서 간 계정명 표기 차이 → normalizeAcct() 통합으로 해결
-- DART 분기보고서 IS는 thstrm_add_amount(누적) 사용 필수
-- push 후 반드시 `npx vercel ls`로 빌드 성공 확인
-- **[2026-04-20] JS prototype shadowing**: TS에서 `string`으로 타이핑된 필드명이 `constructor`/`toString` 등 Object.prototype property와 겹치면, 파서가 미할당 시 prototype의 함수가 반환됨 → ExcelJS crash. `Object.hasOwn()` 기반 접근 필수
-- **[2026-04-20] Node v24 strip-types + tsx 충돌**: `npx tsx` 대신 `node --experimental-strip-types --no-warnings test-X.mjs` 사용. 상대 import에 `.ts` 확장자 명시 + `@ts-expect-error TS5097` 주석
-- **[2026-04-20] 감수 에이전트 false positive 방지**: 데이터 누락(추출 실패) vs 실제 위반을 `missingFields: string[]`로 구분. 누락은 INFO, 위반은 ERROR/WARNING
-- **[2026-04-20] Partial→Complete 어댑터 패턴**: 파서는 부분 결과만 반환, 어댑터에서 `EMPTY_*` 기본값 + spread + derived value(예: collateralDetail에서 totalArea 도출)로 정규화
-- **[2026-04-20] 통계 도구**: IQR 기반 이상치 검출, CV(변동계수 = stddev/mean)로 상대편차 판단, 규모별 분류(50/300/1000억 임계)는 대형 PF 위험 분류에 실용적
-- **[2026-04-21] Firestore 테스트 규칙 만료 대응**: Firebase Console 테스트 모드는 30일 후 `fail-closed`로 전환. 프로덕션이 서버 Admin SDK만 사용한다면 `allow read, write: if false` 전면 차단이 가장 단순하고 안전 — Admin SDK는 서비스 계정 IAM 인증이라 Firestore 보안 규칙을 우회. 클라이언트 SDK 쓰레기(dead code) 제거와 병행 권장
-- **[2026-04-21] Git Bash(Windows) deploy.sh 크로스플랫폼**: (1) rsync 미제공 → `command -v rsync` 체크 후 PowerShell `robocopy /MIR` fallback + `cygpath -w`로 Unix→Windows 경로 변환. (2) robocopy exit 1~7은 성공(복사 완료) 의미 — `>= 8`만 실패로 처리. (3) `vercel ls --prod`는 stdout=URL만 / stderr=Ready 상태 테이블 분리 → 상태 파싱 시 `2>&1` 병합 필수
-- **[2026-04-21] 서비스 계정 키 노출 감사**: `.gitignore`에 `*firebase-adminsdk*.json` + `*-firebase-*.json` 이중 패턴으로 Console 기본 파일명 + 변형 모두 커버. 검증은 `git log --all --full-history -- "*firebase*"` 0건 확인 + `git log --all --full-history -p | grep "BEGIN PRIVATE KEY"`로 key 본문 누출 여부까지 이중 체크
-- **[2026-04-21] Zero-import dead code 감지**: ES 모듈은 `grep -rEl "from ['\"].*lib/firebase['\"]"` 같은 static import 0건 확인으로 안전 삭제 가능. 전제 조건: (a) 동적 import 없음, (b) 문자열 기반 모듈 해석 없음, (c) 재-export 체인 없음
-- **[2026-04-21] gitignored deploy.sh 3중 divergence**: `.gitignore`의 `deploy.sh` (파일명만, 경로 앵커 없음) 규칙이 `app/scripts/deploy.sh`, `scripts/deploy.sh`, 루트 `deploy.sh` 3곳 모두에 매칭되어 세 파일이 모두 untracked + 서로 다르게 발산. 로컬 전용 의도 유지하되 공유가 필요하면 `deploy.sh.example`만 git에 포함하는 패턴 권장
+
+도메인별 CHANGELOG로 분리되어 있습니다 — 작업 시 해당 영역만 참조하세요.
+
+- **[CHANGELOG-DART.md](./CHANGELOG-DART.md)** — DART API, 감사보고서 XML, K-IFRS/K-GAAP, BS/IS/CF 추출
+- **[CHANGELOG-EBITDA.md](./CHANGELOG-EBITDA.md)** — EBITDA D&A, 이자비용 dual-source, Excel 셀 수식, 회계 감수
+- **[CHANGELOG-APPRAISAL.md](./CHANGELOG-APPRAISAL.md)** — 감정평가서 PDF 파싱, FCFE/FCFF, 추정비례율/LTV
+- **[CHANGELOG-DEPLOY.md](./CHANGELOG-DEPLOY.md)** — Vercel, deploy.sh, Next.js 16, Firestore, Git Bash/rsync
+
+## 알려진 이슈
+
+- 분기보고서 전기 데이터(frmtrm_add_amount)의 누적금액 정확성 미검증
+- 감사보고서 파싱 수정 후 일부 기업 실데이터 검증 미완 + **회계기준(K-IFRS/K-GAAP) 변경 회사 휴리스틱 false positive 모니터링 필요** (비율 임계값 튜닝 후속 작업)
+- 일부 감사보고서 ZIP에 재무상태표 본문 없음 (특정 연도 연결 등)
+- 계정명이 완전히 다른 경우(공사미수금↔미수금) 자동 merge 불가
+- 일부 회사가 사업보고서에 연결재무제표 미제출 시 빈값으로 표시 — UI 안내 메시지 추가 필요
 
 ## 버전 이력
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|---------|
+| v2.2 | 2026-05-07 | **/financial 차트 대시보드 + Excel 1.대시보드 시트** — form+table → recharts 차트 대시보드 교체 (16 신규 컴포넌트 `app/src/components/financial-dashboard/`: 회사헤더, 매출추이 ComposedChart, 3-up 손익, 현금흐름 워터폴, 건전성 RadarChart, 비율 KPI grid, 주주 도넛, 차입금 표, 감사인 의견, 리스크/기회, AI 분석 탭, 상세 BS/IS/CF 서브탭, OFS/CFS shadcn Tabs). Excel 1.요약 → 1.대시보드 시트로 재구성 (12 섹션 + 데이터바 + 차트 스타일). 비율 버그 4건 수정 — vsBenchmark↔riskLevel 필드 분리, "배"/"회" 단위 손실 (parseRatioValueForExcel), benchmarkLabel propagation, K-IFRS↔K-GAAP 매출 fallback (getRevenueByYear: 매출총이익+\|매출원가\| accounting identity). recharts 3.x Tooltip intersection bug 회피 (content prop 직접 렌더). 4사 검증 (한화·제넥신·프로젠·셀리드). DartPoint AI MCP 평가 결과: skip (90% 중복) |
+| v2.1 | 2026-04-28 | **DART 추출 정확도 보강** — 8 commit (ZIP 본문 파일 선택, K-IFRS/K-GAAP 자동 폐기, 이자비용 dual-source 통일, BS 자본 sub-rank, 매출 키워드 보강, 종합소견 mergeCells, 코넥스 진단 endpoint). 프로젠 25년 IS 0→163, 셀리드 이자보상배율 dual-source 일치 |
 | v2.0 | 2026-04-17~20 | **Track C 감정평가 자동화 v3** — 5 Phase 신규 구현 (2 감수 에이전트 + 3 property templates + 5 sheet builders + parser-adapter + API/UI), 실 PDF 2종 E2E 5/5 통과, 감수의견 품질 개선 (false positive 제거 + 통계 분석), 13 커밋 |
 | v1.0 | 2026-03-27 | 초기 구조화 — 에이전트 시스템 (오케스트레이터 + 4 서브에이전트 + QA 검수) 구축, 통합 README 생성 |
 | v0.9 | 2026-03-26 | 감사보고서 XML 파싱 정확도 대폭 개선 (주석번호 필터, normalizeAcct, 현재가치할인차금 순액) |
