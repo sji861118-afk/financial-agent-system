@@ -1,28 +1,34 @@
 @AGENTS.md
 
-## 프로젝트 구조
+## 프로젝트 구조 (Dual-Track)
 
 ```
 .
-├── app/                    # 재무분석 웹앱 (Next.js 16 + React 19)
-│   ├── src/               # 소스코드
-│   │   ├── app/           # Next.js App Router (페이지 + API)
-│   │   ├── components/    # UI 컴포넌트 (shadcn/ui)
-│   │   ├── lib/           # 핵심 비즈니스 로직
-│   │   │   ├── dart-api.ts          # DART 전자공시 API
-│   │   │   ├── excel-generator.ts   # Excel 보고서 생성
-│   │   │   ├── financial-analyzer.ts # 재무비율 분석
-│   │   │   ├── appraisal-parser.ts  # 감정평가서 PDF 파서 v2
-│   │   │   ├── appraisal-excel.ts   # 감정평가서 Excel 시트 생성
-│   │   │   └── ...
-│   │   └── types/         # TypeScript 타입 정의
-│   └── public/            # 정적 파일
-├── docx-generator/         # 여신신청서 DOCX 생성기
-├── docs/                   # 기획/설계 문서
-├── .devcontainer/          # GitHub Codespaces 설정
-├── _archive/               # 아카이브 (git 미포함)
-└── _reference/             # 참고자료 (git 미포함)
+├── app/                     # Track A: 재무·감정평가 웹앱 (Next.js 16, Vercel)
+│   └── src/lib/             #  ── 핵심 비즈니스 로직 (frozen — 기존 파일 수정 금지)
+│
+├── docx-generator/          # Track B: 신청서 작성 (Claude Code, 로컬 CLI, gitignored)
+│   ├── 01_입력데이터/        #  ── deal JSON + 재무 xlsx
+│   ├── 02_초안출력/          #  ── {차주명}_초안.docx
+│   └── README.md            #  ── Track A 결합 문서화
+│
+├── docs/
+│   ├── superpowers/         #  ── 진행 중 / 미정 plan + spec (STATUS 마커)
+│   ├── archive/             #  ── 완료된 plan + spec (INDEX.md 참조)
+│   ├── _obsolete/           #  ── stale 문서 (gitignored)
+│   └── SKILLS-AUDIT.md      #  ── 글로벌 스킬 사용 분석
+│
+├── CHANGELOG-DART.md        # Track A — DART 파싱 lessons
+├── CHANGELOG-EBITDA.md      # Track A — EBITDA / 재무비율 / Excel 셀 lessons
+├── CHANGELOG-APPRAISAL.md   # Track A — 감정평가서 lessons
+├── CHANGELOG-DEPLOY.md      # 인프라 — Vercel / deploy.sh lessons
+│
+├── loan-app-next/           # Vercel 배포 미러 (gitignored, deploy.sh가 동기화)
+├── _archive/                # 폐기 코드 (gitignored)
+└── _reference/              # 참고자료 (gitignored)
 ```
+
+**아키텍처 SVG**(`[아키텍처]신청서 작성 자동화_dual_track_architecture_v3.svg`)와 일치: Track A는 도구 개발(Vercel 자동배포), Track B는 신청서 작성(Claude Code 로컬 실행). 두 트랙의 라이프사이클이 다르므로 디렉토리도 분리.
 
 ## 개발 워크플로우
 - main 브랜치에서 작업, 커밋 후 push
@@ -39,65 +45,14 @@
 - Python 모듈 포팅 시 컨벤션: dataclass→interface, Enum→string union, dict→Record, 함수명은 camelCase 유지
 - 3개 이상 파일 생성/수정 후 반드시 `cd app && npx tsc --noEmit`으로 타입 검증 후 진행
 
-## Lessons Learned
-- [2026-03-26] 새 패키지 import 시 반드시 `npm install --save` 먼저 — 로컬 node_modules에 있어도 Vercel에서 설치 안됨
-- [2026-03-26] 브라우저용 라이브러리(pdfjs-dist 등)를 서버에서 쓸 때 DOMMatrix/Path2D 등 폴리필 필요 여부 사전 확인
-- [2026-03-26] 작동하는 코드를 수정할 때 원본 로직 보존, 새 로직은 try/catch fallback으로만 추가
-- [2026-03-26] PDF 파서 수정 시 실제 pdf-parse 텍스트 출력을 console.log로 먼저 확인 후 코드 작성
-- [2026-03-26] DART 분기보고서 IS는 thstrm_add_amount(누적) 사용 필수, thstrm_amount는 3개월치만
-- [2026-03-26] Excel 연도 컬럼은 항상 오름차순(22→25), 분기보고서는 기준월 표시(25.09)
-- [2026-03-26] 감사보고서 XML 주석번호("4,5,6,7") 셀이 `/[\d,]{3,}/`에 매칭 → 금액으로 오인식. `/\d{3,}/` + 주석 패턴 선 필터 필요
-- [2026-03-26] 감사보고서 간 계정명 표기 차이(주석 공백, 번호접두사) → merge 실패의 주원인. normalizeAcct() 통합 필수
-- [2026-03-26] 총차입금 계산 시 차입금 바로 다음 행의 현재가치할인차금(음수)을 감지하여 순액 반영해야 정확
-- [2026-03-31] Vercel Hobby 플랜 기본 serverless timeout 10초 → export const maxDuration = 60 으로 확장 필요 (비상장 감사보고서 XML 파싱 등)
-- [2026-03-31] Next.js 16에서 middleware.ts → proxy.ts로 컨벤션 변경 (빌드 출력: "ƒ Proxy (Middleware)")
-- [2026-03-31] 비상장 외감법인은 fnlttSinglAcntAll/fnlttSinglAcnt API 데이터 없음 → 감사보고서 XML 파싱만 가능 (→ 2026-04-13 사업보고서 XML fallback 추가로 보완)
-- [2026-04-13] **비상장(stockCode 빈값) 회사는 Stage 1/2 API 호출 스킵 필수** — 27+ 불필요 호출로 60초 타임아웃 발생. buildFinancialData에 stockCode 파라미터 전달하여 감지
-- [2026-04-13] **일부 외감법인(corp_cls=E)은 사업보고서를 제출하지만 fnlttSinglAcntAll API에 데이터 없음** — 대지개발(00415558) 등. 사업보고서 document.xml 파싱으로 재무데이터 추출 가능
-- [2026-04-13] Stage 3 감사보고서(F-type)가 최신 연도를 커버 못 할 때 사업보고서(A-type) XML을 fallback으로 파싱하도록 fetchAuditReportData 확장
-- [2026-04-13] hasData=false일 때 빈 엑셀 생성/저장 방지 — 파일관리에 빈 파일이 나타나는 문제 해결
-- [2026-04-13] 배포 시 loan-app-next는 .gitignore에 포함 → git push로 자동 배포 안 됨. `cd loan-app-next && npx vercel --prod`로 수동 배포 필요
-- [2026-03-31] 삼일회계법인 가치산정: 금융회사는 FCFE(자기자본 현금흐름) 방식 사용, FCFF(WACC) 아님
-- [2026-04-01] PDF 텍스트에 NULL 문자(\u0000) 포함 → 정규식 매칭 실패. 파싱 전 `.replace(/\u0000/g, " ")` 전처리 필수
-- [2026-04-01] 연결 숫자 파싱: "78,022,000,0002,435,194,00059.62" → 큰 숫자(콤마포함)를 먼저 추출 후 잔여 파싱
-- [2026-04-01] 감정평가서 호실별 감정가 추출 시 합계 검증(sum vs 합계행)으로 정확도 보장
-- [2026-04-01] DART XML 파서 재무 값이 string("474,588") 반환 → obligor 분석에서 typeof number 체크하므로 parseFloat 변환 필수
-- [2026-04-01] DART fetchBorrowingNotes 차입금 단위는 천원 → loan-engine 백만원 단위이므로 /1000 변환
-- [2026-04-01] DOCX 미정 필드는 [TBD] 대신 빈칸('') 처리 — 실무 검토 시 [TBD] 텍스트 남으면 부적절
-- [2026-04-14] detectAccountDepth() 전 산업 키워드 확장 필수 — 제조/건설/보험/금융/IT 등 80+ depth1 키워드, 30+ depth0 키워드로 K-IFRS/K-GAAP 전체 커버
-- [2026-04-14] DOCX 재무제표 depth→indent 매핑 누락 주의 — StatementLineItem 인터페이스의 `indent` 필드에 값을 넣어야 obligor.ts에서 들여쓰기 적용됨 (`depth` 필드는 Excel 전용)
-- [2026-04-14] refineDepthBySumDetection(): 키워드 미커버 계정도 합계금액 매칭으로 자동 부모-자식 감지 가능. 단, 승격된 부모의 자식 영역은 skipUntil로 건너뛰어야 연쇄 오승격 방지
-- [2026-04-14] loan-app-next에 review API routes 복사 시 의존성(review-store, deal-to-loan-mapper, loan-engine 등) 전체가 필요 — 부분 복사 시 빌드 실패
-- [2026-04-14] **Vercel US(iad1)→DART Korea 레이턴시**: 단일 API 호출 5~8초, 순차 6회=30~48초. `Promise.all` 병렬화로 3년분 동시 호출 필수. ZIP 다운로드(fetchBorrowingNotes/fetchAuditOpinion)는 20초+ → 재무조회 hot path에서 제외
-- [2026-04-14] **Vercel 함수 크래시 식별**: "An error occurred" 텍스트 응답 = non-JSON → 프론트엔드에서 `res.text()` 후 `JSON.parse()`로 안전 처리. `res.json()` 직접 호출 시 SyntaxError
-- [2026-04-14] **Vercel Hobby 제약**: 60초 serverless timeout, 4.5MB response size limit, iad1 리전 고정. Excel base64가 3MB 이상이면 응답에서 제외 필요
-- [2026-04-14] **Firestore fire-and-forget**: 크리티컬하지 않은 저장은 `Promise.resolve().then(async () => { ... })` 패턴으로 응답 블로킹 없이 처리
-- [2026-04-14] **여신승인신청서 추정비례율** = (총수입 - 총사업비) / 종전자산평가액 × 100%. 재개발사업 LTV = 사업비대출합계 / 분양수입금
-- [2026-04-14] 비상장사(롯데건설 등) DART 조회: 연결 재무제표 없음(개별만 가능). 연결 데이터는 IM(투자설명서) 등 별도 소스 필요
-- [2026-04-16] **buildFinancialData OFS/CFS 완전 병렬화 필수** — 기존 for 루프(OFS→CFS 순차)는 Vercel US→DART Korea 레이턴시로 CFS 타임아웃 빈발. `Promise.all`로 6개(OFS 3년+CFS 3년) 동시 호출해야 안정적
-- [2026-04-16] **DART 계정명 연도간 변경 흡수**: `영업이익(손실)`↔`영업이익`, `당기순이익(손실)`↔`연결당기순이익` 등. `normalizeForMatch()` 함수로 `(손실)` 접미사 제거 + `연결` 접두사 제거하여 매칭. yearData 저장 시 정규화 키도 함께 저장, 조회 시 fallback
-- [2026-04-16] **fetchFinancialItems 타임아웃 12초→20초**: Vercel US↔DART Korea 간 레이턴시 고려. 12초 타임아웃은 CFS 호출 실패의 원인
-- [2026-04-16] **최신 보고서 기준 원칙**: 기업은 정정공시를 통해 최신 보고서(2025년)에 과거연도(2023년) 수치를 수정 반영함. 따라서 2023년 데이터는 2023년 자체 보고서의 thstrm이 아니라, 2025년 보고서의 bfefrmtrm을 사용해야 정확. `buildStatements`에서 가장 최근 보고서(reverse sort 먼저 처리)의 데이터가 우선되도록 변경 — `yearData[dataYear]`가 이미 채워져 있으면 이전 보고서로 덮어쓰지 않음
-- [2026-04-16] **비상장 외감법인(corp_cls=E)도 fnlttSinglAcntAll 데이터 있을 수 있음** — 교보생명보험 등. 비상장이라고 무조건 Stage 1/2 스킵하면 안 됨. 항상 시도 후 실패 시 Stage 3 fallback
-- [2026-04-16] **재무비율 null/미추출 값은 0 표기 필수** — `-`로 표시하면 Excel 수식이나 재무비율 계산 시 오류 발생. D&A 등 미추출 항목은 `-`가 아닌 `0`으로 표기해야 계산 연속성 유지
-- [2026-04-16] **BS 정렬**: DART API ord 필드가 부정확한 기업이 많음. `classifyBsSectionByName()` + `reorderBsAccounts()`로 자산→부채→자본 섹션 재정렬 필수
-- [2026-04-16] **감사보고서 XML CF 파싱**: parseOneAuditXml에서 BS/IS 이후 `현금흐름표` 키워드 감지 → cf 섹션 진입. `영업활동`, `투자활동`, `재무활동` 항목 추출. `기말의현금` 행 이후 종료
-- [2026-04-16] **감사보고서 주석 추출**: 감사보고서(F-type) 없으면 사업보고서(A-type) fallback. ZIP 내 여러 XML 파일 중 주석이 가장 많은 파일 선택. `별첨 주석` 또는 `재무제표에 대한 주석` 이후만 파싱
-- [2026-04-16] **감사보고서 연도 범위 확장 방지**: Stage 3 XML 파싱은 당기+전기 2개년 추출하므로 3년 요청 시 5년으로 확장됨. `filterYearsToRange()`로 요청 범위(minReq~maxReq)로 필터링 필수
-- [2026-04-16] **Excel 셀 수식**: ExcelJS에서 `{ formula: "=B5/B10*100" }` 형태로 설정. 크로스시트 참조는 `'시트명'!B5` 형태. 0으로 나누기 방지: `IF(B10=0,"-",B5/B10*100)`
-- [2026-04-16] **회계 감수 에이전트**: Excel 생성 전 BS 등식, IS 논리, BS 항목 분류, 필수 계정 누락, 비율 이상치 등 자동 검증. 결과를 API 응답에 포함
-- [2026-04-16] **BS 분류 일반 규칙**: 키워드 목록 매칭 실패 시 계정명에 "부채" 포함되면 부채로 분류. "당기손익-공정가치측정금융부채" 같은 비표준 계정명 누락 방지. 감수 에이전트에서도 자산 영역에 부채 계정 배치 시 ERROR 감지
-- [2026-04-20] **Vercel `● Ready` ≠ 실제 서비스 정상**: 3d 전 배포(dqgdzmgs8/69vje088h)가 Ready 상태로 표시됐으나 모든 보호 라우트(/financial, /appraisal, /review, /admin, /feedback)가 404 반환. /login만 200, 루트는 307 정상. 원인 추정: 감정평가서 작업 중 app/→loan-app-next 부분 수동 복사로 파일 세트 불일치 → 빌드 산출물에서 페이지 라우트 일부 누락. 복구는 이전 Ready 배포(gx1g2n3u4, 4d 전)로 alias 복원. **재발 방지**: (1) `app/scripts/deploy.sh`로만 배포 (rsync --delete로 완전 동기화), (2) 배포 후 라우트 HTTP 헬스체크 필수 — `/login(200)`, `/financial(307)`, `/appraisal(307)`, `/(307)`, (3) 헬스체크 실패 시 이전 Ready URL(`loan-app-next/.last-ready-deploy.txt` 저장)로 alias 자동 롤백
-- [2026-04-21] **Firestore 테스트 모드 만료 → Admin-SDK-only 락다운**: 2026-04-22 만료 대응으로 `allow read, write: if false` 전면 차단 규칙 게시. 이 프로젝트는 **클라이언트 Firebase SDK 미사용**(모든 접근이 서버 `firebase-admin.ts` 경유) → Admin SDK가 서비스 계정 IAM으로 Firestore Rules 우회하므로 서비스 영향 0. 확인: `/api/dart/health` allOk:true. Firestore 규칙은 `firestore.rules` 파일로 git 추적됨 — Firebase Console 직접 편집 금지, `app/scripts/firebase-rules.sh` 경유 배포
-- [2026-04-21] **Git Bash(Windows)에 rsync 없음**: MSYS2 기본 패키지가 아님. deploy.sh에 `command -v rsync` 체크 + PowerShell `robocopy /MIR` fallback 추가 (+ `cygpath -w` Unix→Windows 경로 변환). **robocopy exit 1~7은 성공** (파일 복사됨), `>= 8`만 실패. 이거 모르면 정상 복사인데 파이프라인이 실패로 인식
-- [2026-04-21] **Vercel CLI stdout/stderr 분리 파싱**: `vercel ls --prod`는 stdout=URL 목록만, stderr=Ready 상태 테이블. 이전 파서 `head -5 | grep '● Ready'` → stdout의 URL만 보고 상태 못 찾아 Ready를 Unknown으로 오탐 → 실제 성공한 배포를 롤백 시도. fix: `2>&1` 병합 + `grep -oE '● [A-Za-z]+' | head -1`
-- [2026-04-21] **서비스 계정 키 감사 명령**: `git log --all --full-history -- "*firebase*"` (파일 단위) + `git log --all --full-history -p | grep "BEGIN PRIVATE KEY"` (본문 단위) 이중 체크. `.gitignore` 패턴은 `*firebase-adminsdk*.json` + `*-firebase-*.json` 이중(Console 기본명 + 변형 모두 커버). `.claude/settings.json`의 PreToolUse hook이 credential 패턴 포함 staged 파일을 commit 차단
-- [2026-04-21] **Dead code 삭제 heuristic**: ES 모듈은 `grep -rEl "from ['\"].*<module>['\"]"` 0건이면 안전 삭제. 단 (a) 동적 import 없음, (b) 문자열 기반 resolution 없음, (c) re-export 체인 없음 전제. `app/src/lib/firebase.ts` 제거 사례 — 1개월간 import 0건으로 남아있던 dead code
-- [2026-04-23] **Vercel default region(iad1)↔DART korea 60초 timeout**: buildFinancialData 한 번 호출에 30초+, 사업보고서 ZIP 보강 추가 시 FUNCTION_INVOCATION_TIMEOUT. `app/vercel.json`에 `{"regions":["icn1"]}` 설정 → 1.2초로 단축 (50배+). **deploy.sh가 src/만 sync하고 vercel.json은 누락하던 버그 동시 수정** — rsync/robocopy 두 분기 모두에 `cp vercel.json` 추가
-- [2026-04-23] **이자비용 우선순위 재정렬**: IS의 정확매칭 "이자비용" → CF "이자지급/이자납부/이자의지급" → IS "금융비용/금융원가" fallback. 효성중공업처럼 IS에 "금융비용"(이자+외환손실+파생손실 통합)만 있는 회사는 통합값으로 잡혀 이자보상배율을 비합리적으로 낮춤 (25년 0.86→11.86배, 14배 차이). calcRatios + excel-generator 모두 동일 우선순위
-- [2026-04-23] **EBITDA Excel 셀 시트 참조 순서 버그**: 시트 생성 순서가 BS→IS→CF인데 IS의 EBITDA formula는 `wb.worksheets.find`로 CF 시트 검색 → 못 찾아 cfDeprRow=0. fix: createFinancialSheet에 `cfSheetNameHint` 인자 추가 + generateExcelReport에서 CF 시트명 사전 계산해 IS 호출에 전달. 행 번호는 wb 검색 대신 `data.cfItemsOfs/cfItemsCfs` 배열에서 직접 산출 (CF 시트 row offset: title=1, header=2, items=3+i)
-- [2026-04-23] **D&A 보강 통합/참고 행 동시 push**: 효성중공업처럼 사업보고서 주석에 "감가상각비 및 무형자산상각비"가 단일 통합 합계(56,122)로 공시되는 케이스 + "유형자산감가상각비"·"무형자산상각비" 분리 합계가 별도로 더 작게 공시되는 케이스 공존. 통합값이 분리합보다 큼(사용권자산상각비 등 추가 포함) → **통합이 EBITDA 진실값**. parseDAFromAnnualXml이 둘 다 수집해 `combined`/`refDepreciation`/`refAmortization` 필드로 반환, mergeDAIntoCfRows가 "감가상각비 및 무형자산상각비(주석)" + "유형자산감가상각비(참고)" + "무형자산상각비(참고)" 3행으로 push. **이중 합산 회피**: calcRatios가 `(참고)` 행 필터 + 통합 라벨 우선 매칭, excel-generator가 cfCombinedDARow 잡히면 cfAmortRow=0으로 EBITDA formula에서 통합값만 한 번 합산
-- [2026-04-23] **D&A 보강 트리거 조건**: `hasCfDepreciationRows()`가 false일 때만 발동(CF 원본에 감가/무형/사용권 키워드 행이 없을 때). 대부분 회사(삼성/LG/SK/네이버 등)는 CF 원본에 감가 행 있음 → 보강 skip. 효성중공업처럼 CF에 D&A 통째로 누락된 회사만 보강 path. 일반화 검증 9개사 (삼성·LG화학·SK하이닉스·카카오·셀트리온·NAVER·현대건설·대우건설·효성중공업) 모두 정상 EBITDA 산출
+## Lessons Learned (분류별 CHANGELOG)
+
+도메인별로 분리되어 있습니다. 작업 시 해당 영역만 참조하세요.
+
+- **[CHANGELOG-DART.md](./CHANGELOG-DART.md)** — DART API, 감사보고서 XML, K-IFRS/K-GAAP, BS/IS/CF 추출, ZIP 본문 파일 선택, 계정명 정규화
+- **[CHANGELOG-EBITDA.md](./CHANGELOG-EBITDA.md)** — EBITDA D&A 보강, 이자비용 dual-source, Excel 셀 수식, 회계 감수 에이전트, financial-analyzer
+- **[CHANGELOG-APPRAISAL.md](./CHANGELOG-APPRAISAL.md)** — 감정평가서 PDF 파싱, FCFE/FCFF, 추정비례율/LTV 계산식
+- **[CHANGELOG-DEPLOY.md](./CHANGELOG-DEPLOY.md)** — Vercel 배포, deploy.sh, Next.js 16, Firestore 규칙, Git Bash/rsync, 서비스 계정 키 보안
 
 ## Current Progress
 ### 완료 (2026-03-26)
@@ -260,18 +215,36 @@
 - **DOCX 총차입금 계산 오류**: BS분석에서 차입금 76,456만 표시 (유동성장기차입금 273,135 + 사채 미포함)
 - **DOCX opinion 텍스트 HTML 엔티티**: &amp;quot; &amp;apos; 등 PDF 텍스트의 특수문자 이스케이프 처리 필요
 
+### 완료 (2026-04-28) — DART 추출 정확도 보강 8 commit
+- **[1085d85] ZIP 다중 XML 본문 파일 선택**: 사업보고서 ZIP 첫 파일은 첨부 감사보고서(0.5MB), 두 번째가 본문(1.5MB). `Object.keys(zip.files)[0]` → 가장 큰 .xml 선택. parseOneAuditXml + parseDAFromAnnualXml 양쪽 적용. **프로젠 25년 진단: bsItems 36→144, isItems 0→163, cfItems 35→37**
+- **[6d1b4e0, 118186c] K-IFRS↔K-GAAP 자동 폐기 (Stage 3 + Stage 1)**: 코넥스→코스닥 전환 회사(프로젠) 같이 회계기준 전환된 보고서가 한 BS 시트에 누적되는 문제. detectAccountingStandard 비율 휴리스틱 + mergeAuditResults 충돌 시 drop + buildStatements 후처리 K-GAAP 라인 필터. accountingStandardChanged 메타플래그 노출
+- **[c4401b4] 이자비용 4-step priority dual-source 통일**: FinancialDataInput에 cfItemsOfs/cfItemsCfs 추가 + findInterestExpenseItem 헬퍼 (IS exact → CF 이자지급 → IS partial → IS 금융비용). **셀리드 5번시트 R024 이자보상배율: -7.44 → -41.07 (IS시트 셀수식과 일치)**. findItem 정확매칭 우선
+- **[e5b5159] BS 자본 sub-rank + (유동)/(비유동) depth 정규화**: getBsSortRank 신규 (자본 2.0~2.6, 총계 9.1~9.4 강제). detectAccountDepth가 (유동)/(비유동) suffix 정규화 후 매칭. DEPTH1_KEYWORDS 12+ 항목 보강
+- **[b0a940e] calcRatios 매출 키워드 보강**: 셀리드 IS "매출" 한 단어 매칭 — getExact 정확매칭 큐에만 추가, 부분매칭에는 미추가 ("매출원가/매출채권" 충돌 회피). **셀리드 매출증가율 -/-/+112.4% 표시 기대**
+- **[e843a42] 종합 소견 mergeCells 1행 통일**: 3행 × N칸 → 1행 × N칸 + row height 60 + wrapText. ExcelJS dump 시 24 hit → 1 hit
+- **[93b15f5] /api/dart/diag-fetch 임시 진단 endpoint**: fnlttSinglAcntAll OFS/CFS × reprtCode 4종 응답 추적 + buildFinancialData 결과 + annualReports 공시 여부. PUBLIC_PATHS 등록 (원인 확정 후 제거 예정)
+- **검증 완료 케이스**: 셀리드 이자보상배율 dual-source 일치 ✓, 종합 소견 mergeCells 1행 통일 ✓, 프로젠 25년 IS 진단 회복 ✓, 매출총이익률/순이익률/회전율 채워짐 ✓
+- **검증 보류 케이스**: 프로젠 BS 161 → ~75 (Stage 1 K-GAAP filter 효과는 사용자 재추출 검증), 셀리드 매출증가율 +112.4% 표시
+- **확인된 비결함**: 제넥신 24/25년 연결재무제표 누락은 **회사 측 미제출**(사업보고서 본문에 "2. 연결재무제표 - 당사는 보고서 제출일 현재 해당사항이 없습니다." 명시). DART API/본문/별첨 어디에도 데이터 없음
+
 ## Next Session Context
-1. **[High] /api/dart/diag-da 임시 endpoint 제거**: 원인 추적용으로 추가, production에 노출 중. PUBLIC_PATHS에서도 제거
-2. **[Medium] D&A 일반화 강화 검토**: 현재 `hasCfDepreciationRows()` false일 때만 사업보고서 보강. CF에 감가는 있지만 무형/사용권 별도 행이 없는 회사들도 가시성 향상 위해 사업보고서 분리 참고 행 push 옵션 검토 (성능 trade-off)
-3. **[Medium] 대우건설 EBITDA 음수 케이스 검증**: CF 감가 970(매우 작음) + 영업이익 음수 → EBITDA -921,063. 사업보고서 보강 강제 trigger 임계값(예: CF 감가가 영업이익의 1% 미만) 도입 검토
-4. **[High] 표 서식 최종 정리**: BS/IS/CF 시트에서 빈 셀 테두리 누락, 비율행 아래 이탈 항목(R51-56 등) 정리 필요
-2. **[High] 회계 감수 에이전트 UI 표시**: 현재 API 응답에만 포함 → 프론트엔드에 검증 결과 표시 (경고 배지, 상세 팝업)
-3. **[High] 증감사유 주석 매칭 품질 개선**: 키워드 매칭 정확도 향상, 관련 없는 주석 필터링, 주석 본문 중 증감 관련 테이블 데이터 추출
-4. **[Medium] fetchBorrowingNotes/fetchAuditOpinion 복원**: 현재 스킵 → 타임아웃 안전하게 재통합 (총차입금 셀수식 SUM에 빠진 항목 보완)
-5. **[Medium] DOCX 버그 수정**: 총차입금 계산(유동성장기차입금+사채 포함), HTML 엔티티 제거
-6. **[Medium] 광명9R 여신승인신청서 완성**: 금리/수수료/대주단 확정 시 공란 채우기
-7. **[Medium] 피드백 확인 루프**: ok-cf1.vercel.app/feedback 에서 신규 피드백 확인 → 수정 → 배포
-8. **여신검토 Phase 4~5**: viewpoint 검색, 승인 워크플로우, 신청서 연동
+1. **[High] 3사 재추출 사용자 시각 검증**: 1085d85 deploy 후 프로젠/셀리드/제넥신 재추출 → BS 행수, 매출증가율, 25년 IS 표시 확인
+2. **[High] 9사 회귀 검증**: `app/scripts/regression-check.mjs` (2026-05-08 추가). 사용 시 production JWT_SECRET 환경변수 필요 (default secret과 다름). 먼저 `--baseline`로 baseline.json 생성 후 비교 모드. 효성중공업 D&A 통합/참고 path는 fragile
+3. ~~**[완료 2026-05-08]** 임시 진단 endpoint 2개 통합 제거~~ — `/api/dart/diag-da` + `/api/dart/diag-fetch` 삭제 + PUBLIC_PATHS 제거 + 배포 완료 (commit 1938f12)
+4. **[Medium] 연결재무제표 미제출 회사 UI 안내**: 빈값 대신 "이 회사는 사업보고서에 연결재무제표 미제출 (개별만 조회 가능)" 표시. accountingStandardChanged 메타플래그도 함께 활용
+5. **[Medium] 회계기준 변경 휴리스틱 임계값 튜닝**: 비율 기반 detectAccountingStandard false positive/negative 모니터링. 현재 K-GAAP 2배+절대3, K-IFRS 1+ — 회귀 검증 후 조정
+6. **[Medium] ZIP 본문 파일 선택 휴리스틱 일반화**: 현재 "가장 큰 .xml" 룰을 다른 보고서 유형(반기/분기/감사)에도 확대 검토. fetchAuditNotes에도 동일 패턴 적용 가능성
+7. **[Medium] D&A 일반화 강화 검토**: 현재 `hasCfDepreciationRows()` false일 때만 사업보고서 보강. CF에 감가는 있지만 무형/사용권 별도 행이 없는 회사들도 가시성 향상 위해 사업보고서 분리 참고 행 push 옵션 검토 (성능 trade-off)
+8. **[Medium] 대우건설 EBITDA 음수 케이스 검증**: CF 감가 970(매우 작음) + 영업이익 음수 → EBITDA -921,063. 사업보고서 보강 강제 trigger 임계값(예: CF 감가가 영업이익의 1% 미만) 도입 검토
+9. **[High] 표 서식 최종 정리**: BS/IS/CF 시트에서 빈 셀 테두리 누락, 비율행 아래 이탈 항목(R51-56 등) 정리 필요
+10. **[High] 회계 감수 에이전트 UI 표시**: 현재 API 응답에만 포함 → 프론트엔드에 검증 결과 표시 (경고 배지, 상세 팝업)
+11. **[High] 증감사유 주석 매칭 품질 개선**: 키워드 매칭 정확도 향상, 관련 없는 주석 필터링, 주석 본문 중 증감 관련 테이블 데이터 추출
+12. **[Medium] fetchBorrowingNotes/fetchAuditOpinion 복원**: 현재 스킵 → 타임아웃 안전하게 재통합 (총차입금 셀수식 SUM에 빠진 항목 보완)
+13. **[Medium] DOCX 버그 수정**: 총차입금 계산(유동성장기차입금+사채 포함), HTML 엔티티 제거
+14. **[Medium] 광명9R 여신승인신청서 완성**: 금리/수수료/대주단 확정 시 공란 채우기
+15. **[Medium] 피드백 확인 루프**: ok-cf1.vercel.app/feedback 에서 신규 피드백 확인 → 수정 → 배포
+16. **[Low] P3 바이오텍 R&D 자산화 EBITDA D&A 보강**: 제넥신 BS 무형자산 변동에서 상각비 추정. 회계 가정 많아 일반화 어려움 — 별도 세션 권장
+17. **여신검토 Phase 4~5**: viewpoint 검색, 승인 워크플로우, 신청서 연동
 
 ## 배포 방법 (중요)
 ```bash
