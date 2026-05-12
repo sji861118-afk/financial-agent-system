@@ -12,6 +12,8 @@ import { buildIndustrialCenterWorkbook } from './property-templates/industrial-c
 import { buildLandPfWorkbook } from './property-templates/land-pf.ts';
 // @ts-expect-error TS5097 — Node v24 strip-types requires .ts extension at runtime
 import { sanitizeWorksheet } from './sheet-builders/form-styles.ts';
+// @ts-expect-error TS5097 — Node v24 strip-types requires .ts extension at runtime
+import { buildExtendedComparativeSheets } from './sheet-builders/comparatives-extended.ts';
 
 export interface OrchestratorInput {
   data: AppraisalData;
@@ -52,6 +54,19 @@ export async function generateAppraisalExcel(input: OrchestratorInput): Promise<
   };
 
   builderByType[data.formType](wb, data, findings);
+
+  // 신규: 토지·구분건물 비준사례 4종 시트 (각 cases가 1건 이상일 때만)
+  const appraisalReportLabel = data.source.appraisalReports[0]?.fileName ?? '감정평가서';
+  buildExtendedComparativeSheets(
+    wb,
+    {
+      landTradeCases: data.landTradeCases,
+      landAppraisalCases: data.landAppraisalCases,
+      unitTradeCases: data.unitTradeCases,
+      unitAppraisalCases: data.unitAppraisalCases,
+    },
+    appraisalReportLabel,
+  );
 
   // ExcelJS write 직전에 모든 워크시트의 undefined cell value를 ''로 정규화 (방어층)
   wb.eachSheet((ws) => sanitizeWorksheet(ws));

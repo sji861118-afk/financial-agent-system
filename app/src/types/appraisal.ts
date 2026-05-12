@@ -188,6 +188,16 @@ export interface ComparativeCase {
   price: number;
   pricePerPyeong: number;
   baseDate: string;
+  // ── 신규: 토지·구분건물 비준사례용 optional fields ──
+  caseCategory?: '토지' | '구분건물';
+  plotNumber?: string;          // 토지: 지번 (예: "마곡동 762-2")
+  landCategory?: string;        // 토지: 지목 (대, 답 등)
+  zoning?: string;              // 토지: 용도지역 (준공업 등)
+  shape?: string;               // 토지: 형상 (세장형 등)
+  roadCondition?: string;       // 토지: 도로조건 (광대소각 등)
+  individualLandPrice?: number; // 토지: 당해개별지가 (원/㎡)
+  dongFloorUnit?: string;       // 구분건물: 동/층/호
+  approvalDate?: string;        // 구분건물: 사용승인일
 }
 
 /** 비준사례 건물 단위 (건물 정보 + 하위 거래/평가 행) */
@@ -304,6 +314,11 @@ export interface AppraisalParseResult {
     finalValue: number;
     method: string;
   } | null;
+  // ── 신규 비준사례 4종 (caseCategory가 토지/구분건물로 마킹된 ComparativeCase) ──
+  landTradeCases: ComparativeCase[];
+  landAppraisalCases: ComparativeCase[];
+  unitTradeCases: ComparativeCase[];
+  unitAppraisalCases: ComparativeCase[];
   confidence: Record<string, number>;
   warnings: string[];
 }
@@ -429,6 +444,12 @@ export interface AppraisalData {
   collateralDetail: CollateralDetailItem[];
   comparatives: ComparativeCase[];
   supply?: SupplyOverview;
+
+  // ── 신규: 토지·구분건물 비준사례 4종 (parser-adapter가 parsed에서 그대로 전달) ──
+  landTradeCases?: ComparativeCase[];
+  landAppraisalCases?: ComparativeCase[];
+  unitTradeCases?: ComparativeCase[];
+  unitAppraisalCases?: ComparativeCase[];
 
   missingFields: string[];
 }

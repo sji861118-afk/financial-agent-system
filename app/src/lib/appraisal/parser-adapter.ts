@@ -97,6 +97,10 @@ export function adaptParserResult(
     collateralDetail,
     comparatives,
     supply,
+    landTradeCases: parsed.landTradeCases ?? [],
+    landAppraisalCases: parsed.landAppraisalCases ?? [],
+    unitTradeCases: parsed.unitTradeCases ?? [],
+    unitAppraisalCases: parsed.unitAppraisalCases ?? [],
     missingFields,
   };
 }

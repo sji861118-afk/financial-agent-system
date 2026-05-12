@@ -45,6 +45,10 @@ export async function POST(request: NextRequest) {
     const mergedBuildings: ComparativeBuilding[] = [];
     let mergedAuctionQuote: AuctionQuote | null = null;
     let mergedValuation: AppraisalParseResult["valuationSummary"] = null;
+    const mergedLandTradeCases: ComparativeCase[] = [];
+    const mergedLandAppraisalCases: ComparativeCase[] = [];
+    const mergedUnitTradeCases: ComparativeCase[] = [];
+    const mergedUnitAppraisalCases: ComparativeCase[] = [];
     const mergedConfidence: Record<string, number> = {};
     const allWarnings: string[] = [];
 
@@ -86,6 +90,12 @@ export async function POST(request: NextRequest) {
         mergedBuildings.push(...result.comparativeBuildings);
       }
 
+      // 신규: 토지·구분건물 비준사례 4종 — 누적
+      if (result.landTradeCases?.length) mergedLandTradeCases.push(...result.landTradeCases);
+      if (result.landAppraisalCases?.length) mergedLandAppraisalCases.push(...result.landAppraisalCases);
+      if (result.unitTradeCases?.length) mergedUnitTradeCases.push(...result.unitTradeCases);
+      if (result.unitAppraisalCases?.length) mergedUnitAppraisalCases.push(...result.unitAppraisalCases);
+
       // 경매통계: 첫 번째 성공 결과 사용
       if (!mergedAuctionQuote && result.auctionQuote) {
         mergedAuctionQuote = result.auctionQuote;
@@ -115,6 +125,10 @@ export async function POST(request: NextRequest) {
       collateralDetail: mergedDetail,
       auctionQuote: mergedAuctionQuote,
       valuationSummary: mergedValuation,
+      landTradeCases: mergedLandTradeCases,
+      landAppraisalCases: mergedLandAppraisalCases,
+      unitTradeCases: mergedUnitTradeCases,
+      unitAppraisalCases: mergedUnitAppraisalCases,
       confidence: mergedConfidence,
       warnings: allWarnings,
     };

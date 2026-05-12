@@ -679,6 +679,330 @@ function parseComparativeBuildings(lines: string[]): {
   return { data: { buildings, cases: allCases }, confidence };
 }
 
+// ────────────────────────────────────────────────────────────────
+// 토지·구분건물 비준사례 파서 (P55-58 토지, P67-69 구분건물 기준)
+// ────────────────────────────────────────────────────────────────
+
+/** 섹션 헤더(예: "■ 인근지역 구분건물 거래사례") 다음에 데이터 시작 라인 위치 탐지 */
+function findSectionDataStart(lines: string[], headerIdx: number, isCaseMarker: (s: string) => boolean): number {
+  for (let i = headerIdx + 1; i < Math.min(headerIdx + 40, lines.length); i++) {
+    if (isCaseMarker(lines[i].trim())) return i;
+  }
+  return -1;
+}
+
+/** 한 케이스 블록 = 다음 마커/소프트 경계 직전까지의 line 배열
+ *  - sectionEnd: 섹션 전체 종료 (이 라인 도달 시 즉시 중단)
+ *  - blockBoundary: 현재 블록만 종료 (다음 마커는 계속 탐색)
+ */
+function splitCaseBlocks(
+  lines: string[],
+  startIdx: number,
+  isCaseMarker: (s: string) => boolean,
+  sectionEnd: (s: string) => boolean,
+  blockBoundary?: (s: string) => boolean,
+): string[][] {
+  const blocks: string[][] = [];
+  let i = startIdx;
+  while (i < lines.length) {
+    const t0 = lines[i].trim();
+    if (sectionEnd(t0)) break;
+    if (!isCaseMarker(t0)) { i++; continue; }
+    const block: string[] = [t0];
+    let j = i + 1;
+    while (j < lines.length) {
+      const t = lines[j].trim();
+      if (sectionEnd(t) || isCaseMarker(t)) break;
+      if (blockBoundary && blockBoundary(t)) { j++; break; }
+      block.push(t);
+      j++;
+    }
+    blocks.push(block);
+    i = j;
+  }
+  return blocks;
+}
+
+/** 토지 사례 케이스 1개 파싱 (평가사례 + 거래사례 공용) */
+function parseLandCaseBlock(block: string[], type: '거래' | '평가'): ComparativeCase | null {
+  if (block.length < 8) return null;
+  const label = block[0];
+  // 지번: "마곡동" + "762-2" 같은 2줄, 또는 "마곡동76" + "2-2" 처럼 끊긴 경우도 합쳐 정규화
+  // 면적+지목 anchor 찾기: "FLOAT 한자(대/답/전/임/잡)"
+  let areaIdx = -1;
+  let areaSqm = 0;
+  let landCategory = '';
+  for (let i = 1; i < block.length; i++) {
+    const m = block[i].match(/^([\d,.]+)\s+([대답전임잡장])$/);
+    if (m) {
+      const v = parseNum(m[1]);
+      if (v) { areaSqm = v; landCategory = m[2]; areaIdx = i; break; }
+    }
+  }
+  if (areaIdx < 0) return null;
+
+  const plotNumber = block.slice(1, areaIdx).join(' ').replace(/\s+/g, ' ').trim();
+
+  // areaIdx 이후 positional: 용도지역 / 이용상황 / 형상 / 도로조건 / 시점+(목적|가액) / 단가 / 개별지가
+  const zoning = block[areaIdx + 1] ?? '';
+  const usage = block[areaIdx + 2] ?? '';
+  const shape = block[areaIdx + 3] ?? '';
+  const roadCondition = block[areaIdx + 4] ?? '';
+  const dateLine = block[areaIdx + 5] ?? '';
+  const unitPriceLine = block[areaIdx + 6] ?? '';
+  const individualLandLine = block[areaIdx + 7] ?? '';
+
+  // 시점+(목적|가액) 분해
+  const dateMatch = dateLine.match(/(\d{4}[.\-]\d{2}[.\-]\d{2})\s*(.*)/);
+  const baseDate = dateMatch ? dateMatch[1].replace(/\./g, '-') : '';
+  const dateRest = dateMatch ? dateMatch[2].trim() : '';
+
+  let price = 0;
+  let purpose = type === '평가' ? '담보' : '거래';
+  if (type === '거래') {
+    // dateRest가 큰 숫자 (실거래가액)
+    const v = parseNum(dateRest);
+    if (v) price = v;
+  } else {
+    // dateRest는 평가목적 (담보/자산재평가 등)
+    if (dateRest) purpose = dateRest;
+  }
+
+  const unitPrice = parseNum(unitPriceLine) || 0;
+  // 평가사례에서 가격은 사례단가만 표시되므로 price = 0이 정상.
+  // 거래사례 + price 미추출 시 단가×면적 보완은 하지 않음 (raw fidelity 우선)
+
+  // 개별지가 "(NUMBER)"
+  let individualLandPrice: number | undefined;
+  const ilMatch = individualLandLine.match(/^\(([\d,.]+)\)$/);
+  if (ilMatch) {
+    const v = parseNum(ilMatch[1]);
+    if (v) individualLandPrice = v;
+  }
+
+  return {
+    type,
+    label,
+    address: plotNumber,
+    buildingName: '',
+    unit: '',
+    usage,
+    purpose,
+    source: type === '거래' ? '실거래가' : '감정평가',
+    areaSqm,
+    areaPyeong: areaSqm * 0.3025,
+    price,
+    pricePerPyeong: unitPrice, // 사례단가(원/㎡) — pyeong 변환 X (raw 원/㎡)
+    baseDate,
+    caseCategory: '토지',
+    plotNumber,
+    landCategory,
+    zoning,
+    shape,
+    roadCondition,
+    individualLandPrice,
+  };
+}
+
+function parseLandComparatives(lines: string[]): {
+  data: { trades: ComparativeCase[]; appraisals: ComparativeCase[] };
+  confidence: number;
+} {
+  const trades: ComparativeCase[] = [];
+  const appraisals: ComparativeCase[] = [];
+
+  // 평가사례 토지: "㉠ 평가사례" 헤더 + 알파벳/숫자 케이스
+  // 거래사례 토지: "㉡ 거래사례" 헤더 + 알파벳 케이스
+  // 평가사례 마커는 숫자(1,2,3,4), 거래사례 마커는 알파벳(A,B,C)
+  const isDigitMarker = (s: string) => /^[1-9]$/.test(s);
+  const isAlphaMarker = (s: string) => /^[A-Z]$/.test(s);
+  const isTerminator = (s: string) => /^[※]/.test(s) || /^㉠|^㉡|^㉢|^㉣|^㉤|^■/.test(s) || /^\(.+\)$/.test(s) && false;
+
+  // 평가사례 섹션 — "㉠ 평가사례" 시작, "㉡" 또는 "※"에서 종료
+  const evalHeaderIdx = findLineIndex(lines, /^㉠\s*평가사례$/, 0);
+  if (evalHeaderIdx >= 0) {
+    const dataStart = findSectionDataStart(lines, evalHeaderIdx, isDigitMarker);
+    if (dataStart > 0) {
+      // 종료 조건: "㉡" 헤더 또는 "※ 출처"
+      const sectionEnd = (() => {
+        for (let i = dataStart; i < lines.length; i++) {
+          const t = lines[i].trim();
+          if (/^㉡/.test(t) || /^※\s*출처/.test(t)) return i;
+        }
+        return lines.length;
+      })();
+      const subLines = lines.slice(0, sectionEnd);
+      const blocks = splitCaseBlocks(
+        subLines,
+        dataStart,
+        isDigitMarker,
+        (s) => /^※\s*출처/.test(s) || /^㉡/.test(s),
+      );
+      for (const b of blocks) {
+        const c = parseLandCaseBlock(b, '평가');
+        if (c) appraisals.push(c);
+      }
+    }
+  }
+
+  // 거래사례 섹션 — "㉡ 거래사례" 시작, "㉢/※" 종료. 비 고 블록은 케이스 사이에 끼어들 수 있음.
+  const tradeHeaderIdx = findLineIndex(lines, /^㉡\s*거래사례$/, 0);
+  if (tradeHeaderIdx >= 0) {
+    const dataStart = findSectionDataStart(lines, tradeHeaderIdx, isAlphaMarker);
+    if (dataStart > 0) {
+      const sectionEnd = (() => {
+        for (let i = dataStart; i < lines.length; i++) {
+          const t = lines[i].trim();
+          if (/^㉢/.test(t) || /^※\s*출처/.test(t) || /^※\s*사례\s*위치도/.test(t)) return i;
+        }
+        return lines.length;
+      })();
+      const subLines = lines.slice(0, sectionEnd);
+      const blocks = splitCaseBlocks(
+        subLines,
+        dataStart,
+        isAlphaMarker,
+        (s) => /^㉢/.test(s) || /^※\s*출처/.test(s) || /^※\s*사례\s*위치도/.test(s),
+        (s) => /^비\s*고$/.test(s),
+      );
+      for (const b of blocks) {
+        const c = parseLandCaseBlock(b, '거래');
+        if (c) trades.push(c);
+      }
+    }
+  }
+
+  void isTerminator;
+  const confidence = (trades.length + appraisals.length) > 0 ? Math.min((trades.length + appraisals.length) / 6, 1) : 0;
+  return { data: { trades, appraisals }, confidence };
+}
+
+/** 구분건물 사례 케이스 1개 파싱 */
+function parseUnitCaseBlock(block: string[], type: '거래' | '평가'): ComparativeCase | null {
+  if (block.length < 9) return null;
+  const label = block[0];
+  // 지번: 2 라인 (시/구/동) + (지번) — "마곡동" + "792-9"
+  // 전유면적 anchor 찾기: 콤마 없는 "NN.NN" 또는 콤마 있는 면적 숫자, 직전 라인이 동/층/호 패턴
+  // 더 안전한 방식: "FLOAT, no 한글" 형태 + 직전 라인이 한글없는 동/층/호 형태(/, 층, 호 포함)
+  let areaIdx = -1;
+  for (let i = 3; i < block.length; i++) {
+    const t = block[i];
+    if (/^[\d,.]+$/.test(t) && !t.includes('-')) {
+      // 직전 라인이 동/층/호 패턴 (/와 숫자 포함, OR 한글+숫자)
+      const prev = block[i - 1] || '';
+      if (/[\/층호동]/.test(prev) || /^[A-Z]?\-?\d/.test(prev)) {
+        areaIdx = i;
+        break;
+      }
+    }
+  }
+  if (areaIdx < 0) return null;
+
+  // areaIdx-1 = 동/층/호, areaIdx-2 = 명칭, areaIdx-3 = 지번 line 2, areaIdx-4 = 지번 line 1
+  if (areaIdx < 4) return null;
+  const district = block[1] || '';
+  const plotNumber = `${district} ${block[2] || ''}`.trim();
+  const buildingName = block[areaIdx - 2] || '';
+  const dongFloorUnit = block[areaIdx - 1] || '';
+  const areaSqm = parseNum(block[areaIdx]) || 0;
+
+  // areaIdx 이후 — 이용상황(보통 2줄, 두 번째 줄이 괄호) / 거래액+단가 1줄 / 시점 / (목적) / 사용승인일
+  let cursor = areaIdx + 1;
+
+  // 이용상황: 첫 줄 + 괄호로 시작하는 두 번째 줄
+  let usage = block[cursor] || '';
+  cursor++;
+  if (cursor < block.length && /^\(.+\)$/.test(block[cursor])) {
+    usage = `${usage} ${block[cursor]}`.trim();
+    cursor++;
+  }
+
+  // 거래액+단가 1줄: "6,230,000,000 7,260,000"
+  const moneyLine = block[cursor] || '';
+  cursor++;
+  const bigNums = moneyLine.match(/\d{1,3}(?:,\d{3})+/g) || [];
+  const price = bigNums.length > 0 ? parseNum(bigNums[0]) || 0 : 0;
+  const unitPrice = bigNums.length > 1 ? parseNum(bigNums[1]) || 0 : 0;
+
+  // 시점
+  const dateLine = block[cursor] || '';
+  cursor++;
+  const baseDate = (dateLine.match(/\d{4}[.\-]\d{2}[.\-]\d{2}/) || [''])[0].replace(/\./g, '-');
+
+  // 평가목적 (평가사례만)
+  let purpose = type === '거래' ? '거래' : '담보';
+  let approvalDate = '';
+  if (type === '평가') {
+    const purposeLine = block[cursor] || '';
+    if (purposeLine && !/\d{4}/.test(purposeLine)) {
+      purpose = purposeLine;
+      cursor++;
+    }
+    approvalDate = (block[cursor]?.match(/\d{4}[.\-]\d{2}[.\-]\d{2}/) || [''])[0];
+  } else {
+    approvalDate = (block[cursor]?.match(/\d{4}[.\-]\d{2}[.\-]\d{2}/) || [''])[0];
+  }
+
+  return {
+    type,
+    label,
+    address: plotNumber,
+    buildingName,
+    unit: dongFloorUnit,
+    usage,
+    purpose,
+    source: type === '거래' ? '실거래가' : '감정평가',
+    areaSqm,
+    areaPyeong: areaSqm * 0.3025,
+    price,
+    pricePerPyeong: unitPrice,
+    baseDate,
+    caseCategory: '구분건물',
+    plotNumber,
+    dongFloorUnit,
+    approvalDate,
+  };
+}
+
+function parseUnitComparatives(lines: string[]): {
+  data: { trades: ComparativeCase[]; appraisals: ComparativeCase[] };
+  confidence: number;
+} {
+  const trades: ComparativeCase[] = [];
+  const appraisals: ComparativeCase[] = [];
+
+  const isAlphaMarker = (s: string) => /^[A-Z]$/.test(s);
+  const isDigitMarker = (s: string) => /^[1-9][0-9]?$/.test(s);
+  const isTerminator = (s: string) => /^※\s*출처/.test(s) || /^■/.test(s) || /^③/.test(s);
+
+  const tradeHeaderIdx = findLineIndex(lines, /^■?\s*인근지역\s*구분건물\s*거래사례/, 0);
+  if (tradeHeaderIdx >= 0) {
+    const dataStart = findSectionDataStart(lines, tradeHeaderIdx, isAlphaMarker);
+    if (dataStart > 0) {
+      const blocks = splitCaseBlocks(lines, dataStart, isAlphaMarker, isTerminator);
+      for (const b of blocks) {
+        const c = parseUnitCaseBlock(b, '거래');
+        if (c) trades.push(c);
+      }
+    }
+  }
+
+  const evalHeaderIdx = findLineIndex(lines, /^■?\s*인근지역\s*구분건물\s*평가사례/, 0);
+  if (evalHeaderIdx >= 0) {
+    const dataStart = findSectionDataStart(lines, evalHeaderIdx, isDigitMarker);
+    if (dataStart > 0) {
+      const blocks = splitCaseBlocks(lines, dataStart, isDigitMarker, isTerminator);
+      for (const b of blocks) {
+        const c = parseUnitCaseBlock(b, '평가');
+        if (c) appraisals.push(c);
+      }
+    }
+  }
+
+  const confidence = (trades.length + appraisals.length) > 0 ? Math.min((trades.length + appraisals.length) / 8, 1) : 0;
+  return { data: { trades, appraisals }, confidence };
+}
+
 function parseAuctionQuote(lines: string[]): {
   data: AuctionQuote | null;
   confidence: number;
@@ -1044,6 +1368,10 @@ export async function parseAppraisalPdf(
       collateralDetail: [],
       auctionQuote: null,
       valuationSummary: null,
+      landTradeCases: [],
+      landAppraisalCases: [],
+      unitTradeCases: [],
+      unitAppraisalCases: [],
       confidence: {},
       warnings: ["PDF에서 텍스트를 추출할 수 없습니다."],
     };
@@ -1055,6 +1383,8 @@ export async function parseAppraisalPdf(
     ["basicInfo", () => parseBasicInfo(lines)],
     ["unitAppraisals", () => parseUnitAppraisals(lines)],
     ["comparatives", () => parseComparativeBuildings(lines)],
+    ["landComparatives", () => parseLandComparatives(lines)],
+    ["unitComparatives", () => parseUnitComparatives(lines)],
     ["auctionQuote", () => parseAuctionQuote(lines)],
     ["propertyOverview", () => parsePropertyOverview(lines)],
     ["floorSummary", () => parseFloorSummary(lines)],
@@ -1078,6 +1408,8 @@ export async function parseAppraisalPdf(
   const floorItems: CollateralDetailItem[] = results.floorSummary || [];
   const detail = unitItems.length > 0 ? unitItems : floorItems;
   const comp = results.comparatives || { buildings: [], cases: [] };
+  const land = results.landComparatives || { trades: [], appraisals: [] };
+  const unit = results.unitComparatives || { trades: [], appraisals: [] };
 
   return {
     collateral: results.basicInfo || {},
@@ -1087,6 +1419,10 @@ export async function parseAppraisalPdf(
     collateralDetail: detail,
     auctionQuote: results.auctionQuote || null,
     valuationSummary: results.valuationSummary || null,
+    landTradeCases: land.trades,
+    landAppraisalCases: land.appraisals,
+    unitTradeCases: unit.trades,
+    unitAppraisalCases: unit.appraisals,
     confidence,
     warnings,
   };
