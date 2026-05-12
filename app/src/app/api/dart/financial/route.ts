@@ -399,6 +399,10 @@ export async function POST(request: NextRequest) {
         hasData: result.hasData,
         noDataReason: result.noDataReason,
         quarterlyWarnings: (result as any).quarterlyWarnings || [],
+        // Stage 1.5 폴백 추적 — financial/page.tsx 토스트 안내용
+        accountingStandardChanged: result.accountingStandardChanged,
+        extractionSourceOfs: result.extractionSourceOfs,
+        extractionSourceCfs: result.extractionSourceCfs,
         analysis: responseAnalysis,
         aiAnalysis: aiAnalysis || analysis?.expertAnalysis || null,
         geminiAnalysis: geminiAnalysis || null,
