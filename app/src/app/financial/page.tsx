@@ -129,6 +129,9 @@ interface FinancialResult {
   excelBase64?: string | null;
   excelTooLarge?: boolean;
   quarterlyWarnings?: string[];
+  accountingStandardChanged?: boolean;
+  extractionSourceOfs?: "stage1" | "annual-report-body" | "audit-report";
+  extractionSourceCfs?: "stage1" | "annual-report-body" | "audit-report";
   qaReport?: {
     status: "PASS" | "AUTO_FIX" | "ESCALATE";
     timestamp: string;
@@ -361,6 +364,16 @@ function FinancialContent() {
           for (const w of data.result.quarterlyWarnings) {
             toast.warning(`⚠️ ${w}`, { duration: 8000 });
           }
+        }
+        // Stage 1.5 폴백 안내 — 사업보고서 본문에서 직접 추출된 경우
+        const annualBody: string[] = [];
+        if (data.result.extractionSourceOfs === "annual-report-body") annualBody.push("개별");
+        if (data.result.extractionSourceCfs === "annual-report-body") annualBody.push("연결");
+        if (annualBody.length > 0) {
+          toast.info(`ℹ️ ${annualBody.join("·")} 재무제표는 사업보고서 본문에서 직접 추출되었습니다 (Stage 1 sparse 폴백).`, { duration: 7000 });
+        }
+        if (data.result.accountingStandardChanged) {
+          toast.warning(`⚠️ 회계기준 변경 감지 (K-IFRS↔K-GAAP). 일부 연도 데이터가 누락될 수 있습니다.`, { duration: 8000 });
         }
       } else {
         toast.error(data.error || "조회 실패");

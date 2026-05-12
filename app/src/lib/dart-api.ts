@@ -210,6 +210,10 @@ export interface FinancialResult {
   notesSections?: Record<string, string>;
   // 회계기준 변경 감지 (K-IFRS↔K-GAAP) — UI 토스트/경고용
   accountingStandardChanged?: boolean;
+  // 데이터 출처: 'stage1'=fnlttSinglAcntAll, 'annual-report-body'=사업보고서 본문 XML,
+  // 'audit-report'=감사보고서 ZIP. OFS/CFS 각각 독립 추적.
+  extractionSourceOfs?: "stage1" | "annual-report-body" | "audit-report";
+  extractionSourceCfs?: "stage1" | "annual-report-body" | "audit-report";
 }
 
 // ── 계정과목 계층 depth 추론 (전 산업 범용) ──
@@ -1037,7 +1041,270 @@ function detectAccountingStandard(bsRows: FinancialRow[], isRows: FinancialRow[]
   return "unknown";
 }
 
+// ─── 사업보고서 본문 XML 공유 캐시 ───────────────────────────────────────────
+// 동일 rcept_no를 D&A 보강(extractDAFromAnnualReport) + Stage 1.5 BS/IS/CF
+// fallback(extractAnnualReportStatements) 양쪽에서 호출하므로 ZIP 다운로드 중복
+// 방지. buildFinancialData finally에서 clearAnnualXmlCache()로 비움.
+const annualXmlCache = new Map<string, Promise<string | null>>();
+
+function clearAnnualXmlCache(): void {
+  annualXmlCache.clear();
+}
+
+/**
+ * 사업보고서 ZIP을 받아 본문 XML 1개를 추출. content-sniff 우선(재무상태표 +
+ * 손익계산서 키워드 모두 포함), fallback은 가장 큰 .xml. 동일 rceptNo 동시 호출 →
+ * 1회만 fetch.
+ */
+async function fetchAnnualReportMainXml(rceptNo: string): Promise<string | null> {
+  const cached = annualXmlCache.get(rceptNo);
+  if (cached) return cached;
+  const promise = (async (): Promise<string | null> => {
+    const apiKey = getApiKey();
+    try {
+      const res = await fetch(
+        `${DART_API_BASE}/document.xml?crtfc_key=${apiKey}&rcept_no=${rceptNo}`,
+        { signal: AbortSignal.timeout(30_000) },
+      );
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf[0] !== 0x50 || buf[1] !== 0x4B) return null;
+      const zip = await JSZip.loadAsync(buf);
+      const xmlNames = Object.keys(zip.files).filter(
+        (n) => !zip.files[n].dir && n.toLowerCase().endsWith(".xml"),
+      );
+      if (xmlNames.length === 0) return null;
+
+      // 크기 내림차순으로 정렬 — 본문이 통상 가장 큼
+      const sized = xmlNames.map((n) => {
+        const size =
+          (zip.files[n] as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize || 0;
+        return { name: n, size };
+      }).sort((a, b) => b.size - a.size);
+
+      // 1차 content-sniff: 상위 5개만 점검 (사업현황 등 큰 비-재무 XML 회피)
+      const sampleCount = Math.min(5, sized.length);
+      for (let i = 0; i < sampleCount; i++) {
+        try {
+          const sample = await zip.files[sized[i].name].async("string");
+          if (/재무상태표/.test(sample) && /(손익계산서|포괄손익계산서)/.test(sample)) {
+            return sample;
+          }
+        } catch {
+          // 다음 후보로
+        }
+      }
+
+      // 2차 fallback: 가장 큰 .xml
+      return await zip.files[sized[0].name].async("string");
+    } catch (e) {
+      console.warn(`[DART] fetchAnnualReportMainXml(${rceptNo}) 실패:`, e instanceof Error ? e.message : e);
+      return null;
+    }
+  })();
+  annualXmlCache.set(rceptNo, promise);
+  return promise;
+}
+
 // 감사보고서 XML 1건 파싱 (공통 로직)
+/**
+ * 순수 TR-테이블 BS/IS/CF 파서 — 감사보고서 본문 XML과 사업보고서 본문 XML 양쪽에서 재사용.
+ * (Stage 1.5 사업보고서 본문 fallback도 동일 파서 사용)
+ */
+function parseStatementsFromTRContent(
+  content: string,
+  targetYear: string
+): { bsRows: FinancialRow[]; isRows: FinancialRow[]; cfRows: FinancialRow[]; years: string[]; notesSections?: Record<string, string>; accountingStandard: AccountingStandard } | null {
+  const trMatches = content.match(/<TR[^>]*>[\s\S]*?<\/TR>/gi) || [];
+  const allRows: string[][] = [];
+  for (const tr of trMatches) {
+    // TD, TH, TE 모든 셀 태그 지원
+    const cellMatches = tr.match(/<(?:TD|TH|TE)[^>]*>[\s\S]*?(?=<(?:TD|TH|TE)|<\/TR)/gi) || [];
+    const rowCells: string[] = [];
+    for (const cell of cellMatches) {
+      // colspan 감지: 병합 셀의 컬럼 정렬 유지
+      const colspanMatch = cell.match(/colspan\s*=\s*["']?(\d+)/i);
+      const colspan = colspanMatch ? parseInt(colspanMatch[1]) : 1;
+      const clean = cell.replace(/<[^>]*>/g, "").trim().replace(/\s+/g, " ");
+      rowCells.push(clean);
+      for (let ci = 1; ci < colspan; ci++) rowCells.push("");
+    }
+    if (rowCells.length) allRows.push(rowCells);
+  }
+
+  const bsItems: [string, string[]][] = [];
+  const isItems: [string, string[]][] = [];
+  const cfItems: [string, string[]][] = [];
+  let section: string | null = null;
+  let bsCompleted = false;
+  let isCompleted = false;
+  let cfCompleted = false;
+  let columnOrderReversed = false;
+
+  for (const row of allRows) {
+    const text = row.join("").replace(/\s/g, "");
+    const first = row[0]?.replace(/\s/g, "") || "";
+
+    if (!bsCompleted && /제\d+.*기|당기|전기|당\s*기|전\s*기/.test(text) && !/매출|영업|자산|부채|당기손익|기타포괄/.test(text)) {
+      const joined = row.join(" ");
+      const curIdx = joined.search(/당기|제\s*\d+\s*\(당\)|제\s*\d+\s*기/);
+      const prevIdx = joined.search(/전기|제\s*\d+\s*\(전\)/);
+      if (curIdx >= 0 && prevIdx >= 0 && prevIdx < curIdx) {
+        columnOrderReversed = true;
+      }
+    }
+
+    if (/현금흐름표/.test(text) && !cfCompleted) {
+      if (section === "is") isCompleted = true;
+      section = "cf_header";
+      continue;
+    }
+    if (/이익잉여금처분|자본변동표|이익잉여금변동|제조원가명세서|원가명세서/.test(text)) {
+      if (section === "is") isCompleted = true;
+      if (section === "cf") cfCompleted = true;
+      section = null;
+    }
+    if (/별첨.*주석은|별첨\s*주석은/.test(row[0] || "")) {
+      if (section === "is") isCompleted = true;
+      if (section === "bs") bsCompleted = true;
+      if (section === "cf") cfCompleted = true;
+      section = null;
+    }
+    if (section === "cf_header" && /영업활동/.test(text)) {
+      section = "cf";
+    }
+    if (section === "is" && /영업활동으로인한|영업활동현금흐름/.test(text)) {
+      isCompleted = true;
+      section = "cf";
+    }
+    if (section === "is" && /\d{4}\.\d{1,2}\.\d{1,2}\s*\(?(전기초|전기말|당기초|당기말)/.test(row[0] || "")) {
+      isCompleted = true;
+      section = null;
+    }
+
+    if (row.length < 2) continue;
+    if (bsCompleted && isCompleted && cfCompleted) continue;
+
+    if (section === "cf" && /기말의?현금|현금및현금성자산의?감소|현금및현금성자산의?기말/.test(text)) {
+      const cfNums: string[] = [];
+      for (const c of row.slice(1)) {
+        const ct = c.trim();
+        if (/^\d{1,2}(,\s*\d{1,2})*$/.test(ct)) continue;
+        if (/\d{3,}/.test(ct) || ct === "-" || /^[\s(]*0[\s)]*$/.test(ct)) cfNums.push(ct);
+      }
+      if (cfNums.length) cfItems.push([row[0].trim(), cfNums]);
+      cfCompleted = true;
+      section = null;
+      continue;
+    }
+
+    if (!bsCompleted) {
+      if (first === "자산" && !first.includes("총계") && !first.includes("합계")) { section = "bs"; continue; }
+      if (text.startsWith("자산") && !text.startsWith("자산총계") && !text.startsWith("자산합계")) { section = "bs"; continue; }
+      if ((first === "자산총계" || first === "자산합계") && section !== "bs") { section = "bs"; /* 데이터 포함 — continue 안 함 */ }
+    }
+
+    if (/부채와자본총계|부채및자본총계|부채와순자산총계/.test(text)) {
+      if (section === "bs") {
+        const nums = row.slice(1).filter((c) => { const ct = c.trim(); if (/^\d{1,2}(,\s*\d{1,2})*$/.test(ct)) return false; return /\d{3,}/.test(ct) || ct === "-" || /^[\s(]*0[\s)]*$/.test(ct); });
+        if (nums.length) bsItems.push([row[0].trim(), nums]);
+        bsCompleted = true;
+        section = "bs_done";
+        continue;
+      }
+    }
+
+    if (!isCompleted) {
+      if (text.includes("손익계산서") || text.includes("포괄손익계산서")) { section = "is_header"; continue; }
+      const IS_START_RE = /영업수익|매출액|공사수익|분양수익|도급수익|보험수익|보험료수익|수입보험료|순영업수익|이자수익합계/;
+      if (section === "is_header" && IS_START_RE.test(first)) section = "is";
+      const firstClean = first.replace(/\(주석[^)]*\)/g, "");
+      if (/^(영업수익|매출액|공사수익|분양수익|보험수익|보험료수익|수입보험료|순영업수익|Ⅰ\.?(영업수익|매출액|공사수익|보험수익)|I\.?(영업수익|매출액|공사수익|보험수익))/.test(firstClean) && section !== "is") section = "is";
+      if (section === "bs_done" && (IS_START_RE.test(firstClean) || /Ⅰ\.?(매출|공사|영업|보험|순영업)/.test(firstClean))) section = "is";
+    }
+    if (section === "bs_done" && row.length < 3 && !/매출|영업수익|공사수익|분양수익|보험수익|보험료수익|순영업수익/.test(first)) continue;
+
+    if (section === "is" && /^(기본주당|희석주당|주당)/.test(first)) continue;
+    if (section === "is" && /^(배당금지급$|지분법자본변동|지분법자본조정|지분법이익잉여금|종속회사|재평가차익)/.test(first)) { isCompleted = true; section = null; continue; }
+
+    if (section !== "bs" && section !== "is" && section !== "cf") continue;
+    const nums: string[] = [];
+    for (const c of row.slice(1)) {
+      const ct = c.trim();
+      if (/^\d{1,2}(,\s*\d{1,2})*$/.test(ct)) continue;
+      if (/\d{3,}/.test(ct) || ct === "-" || /^[\s(]*0[\s)]*$/.test(ct)) nums.push(ct);
+    }
+    if (!nums.length) continue;
+    const acctName = row[0].trim();
+    if (!acctName) continue;
+    if (/^\d+$/.test(acctName.replace(/\s/g, ""))) continue;
+    if (section === "bs") bsItems.push([acctName, nums]);
+    else if (section === "is") isItems.push([acctName, nums]);
+    else if (section === "cf") cfItems.push([acctName, nums]);
+  }
+
+  if (!bsItems.length && !isItems.length) return null;
+
+  const prevYear = String(parseInt(targetYear) - 1);
+
+  function detectTypicalCols(items: [string, string[]][]): number {
+    const freq: Record<number, number> = {};
+    for (const [, nums] of items) {
+      if (nums.length >= 2) freq[nums.length] = (freq[nums.length] || 0) + 1;
+    }
+    const best = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
+    return best ? parseInt(best[0]) : 2;
+  }
+
+  function extractTwoYears(items: [string, string[]][], yrCur: string, yrPrev: string, reversed: boolean): FinancialRow[] {
+    const typicalCols = detectTypicalCols(items);
+    const rows: FinancialRow[] = [];
+    for (const [acct, nums] of items) {
+      const noteRef = extractNoteRef(acct);
+      const acctClean = normalizeAcct(acct);
+      if (isExcludedAccount(acctClean)) continue;
+      const row: FinancialRow = { account: acctClean, depth: detectAccountDepth(acctClean, ["BS", "IS", "CIS"]), noteRef };
+      let v1: string, v2: string;
+
+      if (typicalCols >= 4 && nums.length >= 4) {
+        const pick = (a: string, b: string) => {
+          if (a && a !== "" && a !== "-" && /\d/.test(a)) return a;
+          if (b && b !== "" && b !== "-" && /\d/.test(b)) return b;
+          return a || b || "-";
+        };
+        v1 = pick(nums[0], nums[1]);
+        v2 = pick(nums[2], nums[3]);
+      } else if (nums.length >= 2) {
+        v1 = nums[0]; v2 = nums[1];
+      } else if (nums.length === 1) {
+        v1 = nums[0]; v2 = "-";
+      } else continue;
+
+      const curVal = reversed ? v2 : v1;
+      const prevVal = reversed ? v1 : v2;
+
+      row[yrCur] = toMillions(String(parseAuditNum(curVal) || 0));
+      row[yrPrev] = toMillions(String(parseAuditNum(prevVal) || 0));
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  const notesSections = extractNoteSections(content);
+  const bsRows = extractTwoYears(bsItems, targetYear, prevYear, columnOrderReversed);
+  const isRows = extractTwoYears(isItems, targetYear, prevYear, columnOrderReversed);
+  const cfRows = extractTwoYears(cfItems, targetYear, prevYear, columnOrderReversed);
+  const accountingStandard = detectAccountingStandard(bsRows, isRows);
+
+  return {
+    bsRows,
+    isRows,
+    cfRows,
+    years: [targetYear, prevYear],
+    notesSections: Object.keys(notesSections).length > 0 ? notesSections : undefined,
+    accountingStandard,
+  };
+}
+
 async function parseOneAuditXml(
   rceptNo: string,
   targetYear: string
@@ -1064,218 +1331,7 @@ async function parseOneAuditXml(
     const mainFile = sortedByCfFs[0] || Object.keys(zip.files)[0];
     const content = await zip.files[mainFile].async("string");
 
-    const trMatches = content.match(/<TR[^>]*>[\s\S]*?<\/TR>/gi) || [];
-    const allRows: string[][] = [];
-    for (const tr of trMatches) {
-      // TD, TH, TE 모든 셀 태그 지원
-      const cellMatches = tr.match(/<(?:TD|TH|TE)[^>]*>[\s\S]*?(?=<(?:TD|TH|TE)|<\/TR)/gi) || [];
-      const rowCells: string[] = [];
-      for (const cell of cellMatches) {
-        // colspan 감지: 병합 셀의 컬럼 정렬 유지
-        const colspanMatch = cell.match(/colspan\s*=\s*["']?(\d+)/i);
-        const colspan = colspanMatch ? parseInt(colspanMatch[1]) : 1;
-        const clean = cell.replace(/<[^>]*>/g, "").trim().replace(/\s+/g, " ");
-        rowCells.push(clean);
-        for (let ci = 1; ci < colspan; ci++) rowCells.push("");
-      }
-      if (rowCells.length) allRows.push(rowCells);
-    }
-
-    const bsItems: [string, string[]][] = [];
-    const isItems: [string, string[]][] = [];
-    const cfItems: [string, string[]][] = [];
-    let section: string | null = null;
-    let bsCompleted = false;  // BS 파싱 완료 플래그
-    let isCompleted = false;  // IS 파싱 완료 플래그
-    let cfCompleted = false;  // CF 파싱 완료 플래그
-    // 컬럼 순서 감지: 당기가 먼저인지 전기가 먼저인지
-    let columnOrderReversed = false; // true면 전기가 첫 컬럼
-
-    for (const row of allRows) {
-      const text = row.join("").replace(/\s/g, "");
-      const first = row[0]?.replace(/\s/g, "") || "";
-
-      // 헤더 행에서 당기/전기 컬럼 순서 감지 — BS 완료 전까지만 (자본변동표 등 후속 섹션 오감지 방지)
-      if (!bsCompleted && /제\d+.*기|당기|전기|당\s*기|전\s*기/.test(text) && !/매출|영업|자산|부채|당기손익|기타포괄/.test(text)) {
-        const joined = row.join(" ");
-        const curIdx = joined.search(/당기|제\s*\d+\s*\(당\)|제\s*\d+\s*기/);
-        const prevIdx = joined.search(/전기|제\s*\d+\s*\(전\)/);
-        if (curIdx >= 0 && prevIdx >= 0 && prevIdx < curIdx) {
-          columnOrderReversed = true;
-        }
-      }
-
-      // 섹션 종료 검사는 셀 수와 무관하게 항상 수행
-      if (/현금흐름표/.test(text) && !cfCompleted) {
-        if (section === "is") isCompleted = true;
-        section = "cf_header";
-        continue;
-      }
-      if (/이익잉여금처분|자본변동표|이익잉여금변동|제조원가명세서|원가명세서/.test(text)) {
-        if (section === "is") isCompleted = true;
-        if (section === "cf") cfCompleted = true;
-        section = null;
-      }
-      if (/별첨.*주석은|별첨\s*주석은/.test(row[0] || "")) {
-        if (section === "is") isCompleted = true;
-        if (section === "bs") bsCompleted = true;
-        if (section === "cf") cfCompleted = true;
-        section = null;
-      }
-      // CF 시작 감지: IS 이후 영업활동 키워드 → CF 진입
-      if (section === "cf_header" && /영업활동/.test(text)) {
-        section = "cf";
-      }
-      // IS에서 갑자기 CF 키워드가 나오면 IS 종료 + CF 시작
-      if (section === "is" && /영업활동으로인한|영업활동현금흐름/.test(text)) {
-        isCompleted = true;
-        section = "cf";
-      }
-      if (section === "is" && /\d{4}\.\d{1,2}\.\d{1,2}\s*\(?(전기초|전기말|당기초|당기말)/.test(row[0] || "")) {
-        isCompleted = true;
-        section = null;
-      }
-
-      if (row.length < 2) continue;
-
-      // BS/IS/CF 모두 완료되었으면 더 이상 파싱하지 않음
-      if (bsCompleted && isCompleted && cfCompleted) continue;
-      // CF 종료: 기말의 현금 이후
-      if (section === "cf" && /기말의?현금|현금및현금성자산의?감소|현금및현금성자산의?기말/.test(text)) {
-        // 기말 현금 행은 포함 후 CF 종료
-        const cfNums: string[] = [];
-        for (const c of row.slice(1)) {
-          const ct = c.trim();
-          if (/^\d{1,2}(,\s*\d{1,2})*$/.test(ct)) continue;
-          if (/\d{3,}/.test(ct) || ct === "-" || /^[\s(]*0[\s)]*$/.test(ct)) cfNums.push(ct);
-        }
-        if (cfNums.length) cfItems.push([row[0].trim(), cfNums]);
-        cfCompleted = true;
-        section = null;
-        continue;
-      }
-
-      // BS 시작 감지 — 이미 BS 완료 시 재진입 방지
-      if (!bsCompleted) {
-        if (first === "자산" && !first.includes("총계") && !first.includes("합계")) { section = "bs"; continue; }
-        if (text.startsWith("자산") && !text.startsWith("자산총계") && !text.startsWith("자산합계")) { section = "bs"; continue; }
-        if ((first === "자산총계" || first === "자산합계") && section !== "bs") { section = "bs"; /* 데이터 포함 — continue 안 함 */ }
-      }
-
-      // BS 종료: 부채와자본총계 → IS 전환 준비
-      if (/부채와자본총계|부채및자본총계|부채와순자산총계/.test(text)) {
-        if (section === "bs") {
-          const nums = row.slice(1).filter((c) => { const ct = c.trim(); if (/^\d{1,2}(,\s*\d{1,2})*$/.test(ct)) return false; return /\d{3,}/.test(ct) || ct === "-" || /^[\s(]*0[\s)]*$/.test(ct); });
-          if (nums.length) bsItems.push([row[0].trim(), nums]);
-          bsCompleted = true;
-          section = "bs_done"; // BS 끝 → IS 시작 대기
-          continue;
-        }
-      }
-
-      // IS 시작 — 이미 IS 완료 시 재진입 방지
-      if (!isCompleted) {
-        if (text.includes("손익계산서") || text.includes("포괄손익계산서")) { section = "is_header"; continue; }
-        // IS 첫 항목 패턴 (건설/보험/금융업 포함)
-        const IS_START_RE = /영업수익|매출액|공사수익|분양수익|도급수익|보험수익|보험료수익|수입보험료|순영업수익|이자수익합계/;
-        if (section === "is_header" && IS_START_RE.test(first)) section = "is";
-        // IS 시작: 로마숫자 + 매출액/영업수익 패턴 (주석 번호 포함 가능)
-        const firstClean = first.replace(/\(주석[^)]*\)/g, "");
-        if (/^(영업수익|매출액|공사수익|분양수익|보험수익|보험료수익|수입보험료|순영업수익|Ⅰ\.?(영업수익|매출액|공사수익|보험수익)|I\.?(영업수익|매출액|공사수익|보험수익))/.test(firstClean) && section !== "is") section = "is";
-        // BS 종료 직후 IS 첫 항목이 나오면 IS 시작
-        if (section === "bs_done" && (IS_START_RE.test(firstClean) || /Ⅰ\.?(매출|공사|영업|보험|순영업)/.test(firstClean))) section = "is";
-      }
-      // bs_done 상태에서 다른 내용이면 아직 IS 시작 전 (단위/기간 표시 등)
-      if (section === "bs_done" && row.length < 3 && !/매출|영업수익|공사수익|분양수익|보험수익|보험료수익|순영업수익/.test(first)) continue;
-
-      // IS 종료: 주당이익/주당손익 이후 나오는 비IS 항목
-      if (section === "is" && /^(기본주당|희석주당|주당)/.test(first)) continue; // 주당 항목 스킵
-      // IS 종료: 기타 비IS 패턴 (배당금수익/배당금지급/지분법이익 등 IS 항목과 혼동 방지)
-      if (section === "is" && /^(배당금지급$|지분법자본변동|지분법자본조정|지분법이익잉여금|종속회사|재평가차익)/.test(first)) { isCompleted = true; section = null; continue; }
-
-      // (부채와자본총계 처리는 위에서 bs_done 전환 시 수행)
-
-      if (section !== "bs" && section !== "is" && section !== "cf") continue;
-      const nums: string[] = [];
-      for (const c of row.slice(1)) {
-        const ct = c.trim();
-        if (/^\d{1,2}(,\s*\d{1,2})*$/.test(ct)) continue;
-        if (/\d{3,}/.test(ct) || ct === "-" || /^[\s(]*0[\s)]*$/.test(ct)) nums.push(ct);
-      }
-      if (!nums.length) continue;
-      const acctName = row[0].trim();
-      if (!acctName) continue;
-      if (/^\d+$/.test(acctName.replace(/\s/g, ""))) continue;
-      if (section === "bs") bsItems.push([acctName, nums]);
-      else if (section === "is") isItems.push([acctName, nums]);
-      else if (section === "cf") cfItems.push([acctName, nums]);
-    }
-
-    if (!bsItems.length && !isItems.length) return null;
-
-    const prevYear = String(parseInt(targetYear) - 1);
-
-    // 대표 컬럼 수 결정: 전체 항목의 최빈 nums.length (빈 셀 포함한 원본 기준)
-    function detectTypicalCols(items: [string, string[]][]): number {
-      const freq: Record<number, number> = {};
-      for (const [, nums] of items) {
-        if (nums.length >= 2) freq[nums.length] = (freq[nums.length] || 0) + 1;
-      }
-      const best = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
-      return best ? parseInt(best[0]) : 2;
-    }
-
-    function extractTwoYears(items: [string, string[]][], yrCur: string, yrPrev: string, reversed: boolean): FinancialRow[] {
-      const typicalCols = detectTypicalCols(items);
-      const rows: FinancialRow[] = [];
-      for (const [acct, nums] of items) {
-        const noteRef = extractNoteRef(acct);
-        const acctClean = normalizeAcct(acct);
-        if (isExcludedAccount(acctClean)) continue;
-        const row: FinancialRow = { account: acctClean, depth: detectAccountDepth(acctClean, ["BS", "IS", "CIS"]), noteRef };
-        let v1: string, v2: string; // v1=첫째 컬럼, v2=둘째 컬럼
-
-        if (typicalCols >= 4 && nums.length >= 4) {
-          // 4컬럼: [영역A-1, 영역A-2, 영역B-1, 영역B-2]
-          const pick = (a: string, b: string) => {
-            if (a && a !== "" && a !== "-" && /\d/.test(a)) return a;
-            if (b && b !== "" && b !== "-" && /\d/.test(b)) return b;
-            return a || b || "-";
-          };
-          v1 = pick(nums[0], nums[1]);
-          v2 = pick(nums[2], nums[3]);
-        } else if (nums.length >= 2) {
-          v1 = nums[0]; v2 = nums[1];
-        } else if (nums.length === 1) {
-          v1 = nums[0]; v2 = "-";
-        } else continue;
-
-        // 컬럼 순서가 전기→당기인 경우 swap
-        const curVal = reversed ? v2 : v1;
-        const prevVal = reversed ? v1 : v2;
-
-        row[yrCur] = toMillions(String(parseAuditNum(curVal) || 0));
-        row[yrPrev] = toMillions(String(parseAuditNum(prevVal) || 0));
-        rows.push(row);
-      }
-      return rows;
-    }
-
-    // 감사보고서 주석 섹션 추출 (이미 메모리에 있는 content 사용)
-    const notesSections = extractNoteSections(content);
-    const bsRows = extractTwoYears(bsItems, targetYear, prevYear, columnOrderReversed);
-    const isRows = extractTwoYears(isItems, targetYear, prevYear, columnOrderReversed);
-    const cfRows = extractTwoYears(cfItems, targetYear, prevYear, columnOrderReversed);
-    const accountingStandard = detectAccountingStandard(bsRows, isRows);
-
-    return {
-      bsRows,
-      isRows,
-      cfRows,
-      years: [targetYear, prevYear],
-      notesSections: Object.keys(notesSections).length > 0 ? notesSections : undefined,
-      accountingStandard,
-    };
+    return parseStatementsFromTRContent(content, targetYear);
   } catch (e) {
     console.error(`[DART] ${targetYear}년 감사보고서 파싱 실패:`, e);
     return null;
@@ -1672,34 +1728,73 @@ function parseDAFromAnnualXml(content: string, years: string[]): DAResult {
   const depMap = splitAndMap(depSingles, "depreciation");
   const amortMap = splitAndMap(amortSingles, "amortization");
 
+  // ─── Note 31 "비용의 성격별 분류" 컨텍스트 매칭 ───────────────────────────
+  // K-IFRS 주석에서 영업비용을 성격별로 분해할 때 D&A를 명시적으로 공시. top-level에
+  // 통합 라벨이 없는 회사도 이 주석에서 추출 가능. "비용의 성격별 분류" 라벨이 등장한
+  // 직후 N개 TR 윈도우만 매칭 → 다른 표(예: 매출원가 명세) false positive 방지.
+  const NOTE31_LABEL_RE = /(비용의?성격별?분류|성격별?비용)/;
+  const NOTE31_WINDOW = 200;
+  const note31Windows: Array<{ start: number; end: number }> = [];
+  for (const r of rows) {
+    if (NOTE31_LABEL_RE.test(r.labelNoSp)) {
+      note31Windows.push({ start: r.idx, end: r.idx + NOTE31_WINDOW });
+    }
+  }
+  function inNote31(idx: number): boolean {
+    return note31Windows.some((w) => idx >= w.start && idx <= w.end);
+  }
+  function collectInNote31(matcher: RegExp): Row[] {
+    if (note31Windows.length === 0) return [];
+    return rows.filter((r) => r.nums.length === 1 && matcher.test(r.labelNoSp) && inNote31(r.idx));
+  }
+
+  const note31Combined = collectInNote31(/^감가상각비(및|와)무형자산상각비$/);
+  const note31Dep = collectInNote31(/^(감가상각비|유형자산감가상각비)$/);
+  const note31Am = collectInNote31(/^(무형자산상각비|무형자산감가상각비|사용권자산상각비)$/);
+  const note31CombinedMap = note31Combined.length > 0 ? splitAndMap(note31Combined, "depreciation") : { ofs: {}, cfs: {} };
+  const note31DepMap = note31Dep.length > 0 ? splitAndMap(note31Dep, "depreciation") : { ofs: {}, cfs: {} };
+  const note31AmMap = note31Am.length > 0 ? splitAndMap(note31Am, "amortization") : { ofs: {}, cfs: {} };
+
   function build(side: "ofs" | "cfs"): DAResultPerFs | null {
     const cb = combinedMap[side];
+    const cb31 = note31CombinedMap[side];
     const dp = depMap[side];
     const am = amortMap[side];
+    const dp31 = note31DepMap[side];
+    const am31 = note31AmMap[side];
+
     const hasCb = Object.keys(cb).length > 0;
+    const hasCb31 = Object.keys(cb31).length > 0;
     const hasDp = Object.keys(dp).length > 0;
     const hasAm = Object.keys(am).length > 0;
-    if (!hasCb && !hasDp && !hasAm) return null;
+    const hasDp31 = Object.keys(dp31).length > 0;
+    const hasAm31 = Object.keys(am31).length > 0;
+    if (!hasCb && !hasCb31 && !hasDp && !hasAm && !hasDp31 && !hasAm31) return null;
 
+    // 참고용 분리값: top-level 우선, 없으면 Note 31
+    const refDp = hasDp ? dp : (hasDp31 ? dp31 : undefined);
+    const refAm = hasAm ? am : (hasAm31 ? am31 : undefined);
+
+    // 우선순위 1: top-level combined
     if (hasCb) {
-      // 통합값이 있으면: combined를 진실값으로, 분리값은 참고용으로 분리
-      return {
-        depreciation: cb, // EBITDA 산정용 (mergeDAIntoCfRows가 cfItems에 push)
-        amortization: {}, // 통합값에 이미 포함되어 있으므로 비움 (이중 합산 방지)
-        combined: cb,
-        refDepreciation: hasDp ? dp : undefined,
-        refAmortization: hasAm ? am : undefined,
-      };
+      return { depreciation: cb, amortization: {}, combined: cb, refDepreciation: refDp, refAmortization: refAm };
     }
-    // 통합값 없을 때: 분리 합산이 EBITDA용
-    return { depreciation: dp, amortization: am };
+    // 우선순위 2: Note 31 combined
+    if (hasCb31) {
+      return { depreciation: cb31, amortization: {}, combined: cb31, refDepreciation: refDp, refAmortization: refAm };
+    }
+    // 우선순위 3: top-level 분리
+    if (hasDp || hasAm) {
+      return { depreciation: dp, amortization: am };
+    }
+    // 우선순위 4: Note 31 분리
+    return { depreciation: dp31, amortization: am31 };
   }
 
   return { ofs: build("ofs"), cfs: build("cfs") };
 }
 
 async function fetchAndParseOneAnnualReport(
-  apiKey: string,
   rceptNo: string,
   reportNm: string,
   requestedYears: string[],
@@ -1714,18 +1809,10 @@ async function fetchAndParseOneAnnualReport(
     const coverage = [String(curYear), String(curYear - 1)].filter((y) => requestedYears.includes(y));
     if (coverage.length === 0) return empty;
 
-    const xmlRes = await fetch(
-      `${DART_API_BASE}/document.xml?crtfc_key=${apiKey}&rcept_no=${rceptNo}`,
-      { signal: AbortSignal.timeout(30_000) }, // 사업보고서 ZIP 큰 회사 + Vercel iad1→DART 레이턴시 여유
-    );
-    const buf = Buffer.from(await xmlRes.arrayBuffer());
-    if (buf[0] !== 0x50 || buf[1] !== 0x4B) return empty;
-    const zip = await JSZip.loadAsync(buf);
-    const mainName =
-      Object.keys(zip.files).find((n) => !zip.files[n].dir && n.endsWith(".xml") && !/_\d+\.xml$/.test(n)) ||
-      Object.keys(zip.files).find((n) => !zip.files[n].dir && n.endsWith(".xml"));
-    if (!mainName) return empty;
-    const content = await zip.files[mainName].async("string");
+    // 공유 캐시 사용 — Stage 1.5(extractAnnualReportStatements)가 같은 rceptNo를
+    // 호출하면 1회만 다운로드. content-sniff로 본문 XML 선택.
+    const content = await fetchAnnualReportMainXml(rceptNo);
+    if (!content) return empty;
     // coverage 연도(내림차순)를 years로 넘겨 vals[0]=당기, vals[1]=전기로 정확히 매핑
     return parseDAFromAnnualXml(content, coverage);
   } catch (e) {
@@ -1764,7 +1851,7 @@ async function extractDAFromAnnualReport(corpCode: string, years: string[]): Pro
     console.log(`[DART] D&A 보강 — 사업보고서 ${selected.length}건 병렬 파싱`);
 
     const parsed = await Promise.all(
-      selected.map((r) => fetchAndParseOneAnnualReport(apiKey, r.rcept_no, r.report_nm, years)),
+      selected.map((r) => fetchAndParseOneAnnualReport(r.rcept_no, r.report_nm, years)),
     );
 
     // 여러 보고서의 결과 병합: 앞 보고서(최신) 값이 우선, 뒤 보고서는 비어있는 연도만 채움
@@ -1794,6 +1881,156 @@ async function extractDAFromAnnualReport(corpCode: string, years: string[]): Pro
     return merged;
   } catch (e) {
     console.warn(`[DART] extractDAFromAnnualReport 실패:`, e instanceof Error ? e.message : e);
+    return empty;
+  }
+}
+
+// ─── Stage 1.5: 사업보고서 본문 BS/IS/CF 추출 ───────────────────────────────
+// fnlttSinglAcntAll(Stage 1)이 sparse한 비상장 외감법인 등을 위해 사업보고서 본문
+// XML에서 직접 BS/IS/CF 표를 파싱. 사업보고서에는 연결+별도 두 세트가 같은 XML에
+// 들어있어 OFS/CFS 분리 전처리 필요.
+
+/**
+ * 사업보고서 본문 XML을 (연결 / 별도) 두 섹션으로 분리.
+ * - 비상장 외감법인 (프로젠 등): 연결 섹션 없음 → 전체가 OFS
+ * - 일반 상장사: 연결 섹션 먼저, 별도 섹션 뒤
+ */
+function splitAnnualReportXml(content: string): { ofsContent: string | null; cfsContent: string | null } {
+  const cfsStart = content.search(/연결\s*재무\s*상태표/);
+
+  if (cfsStart < 0) {
+    return { ofsContent: content, cfsContent: null };
+  }
+
+  // 연결 이후 본문에서 "재무상태표" 매치 모두 수집 → 직전 8자에 "연결"이 없는 첫 매치 채택
+  const afterCfs = content.slice(cfsStart + 1);
+  let ofsRelative = -1;
+  for (const m of afterCfs.matchAll(/재무\s*상태표|별도\s*재무상태표|개별\s*재무상태표/g)) {
+    const idx = m.index ?? -1;
+    if (idx < 0) continue;
+    const before = afterCfs.slice(Math.max(0, idx - 8), idx);
+    if (!/연결\s*$/.test(before)) {
+      ofsRelative = idx;
+      break;
+    }
+  }
+
+  if (ofsRelative < 0) {
+    return { ofsContent: null, cfsContent: content.slice(cfsStart) };
+  }
+  return {
+    cfsContent: content.slice(cfsStart, cfsStart + 1 + ofsRelative),
+    ofsContent: content.slice(cfsStart + 1 + ofsRelative),
+  };
+}
+
+/**
+ * 사업보고서 1건의 본문 XML을 받아 {ofs, cfs} 각각 파싱.
+ */
+async function parseStatementsFromAnnualReportXml(
+  rceptNo: string,
+  reportNm: string,
+  requestedYears: string[],
+): Promise<{
+  ofs: ReturnType<typeof parseStatementsFromTRContent> | null;
+  cfs: ReturnType<typeof parseStatementsFromTRContent> | null;
+  curYear: string | null;
+} | null> {
+  const curMatch = reportNm.match(/\((\d{4})[./]\d{1,2}\)/);
+  const curYear = curMatch ? curMatch[1] : null;
+  if (!curYear) {
+    console.warn(`[DART] 사업보고서 ${rceptNo} (${reportNm}) — 당기 연도 파싱 실패`);
+    return null;
+  }
+  const coverage = [curYear, String(parseInt(curYear) - 1)].filter((y) => requestedYears.includes(y));
+  if (coverage.length === 0) return null;
+
+  const content = await fetchAnnualReportMainXml(rceptNo);
+  if (!content) return null;
+
+  const { ofsContent, cfsContent } = splitAnnualReportXml(content);
+  const ofs = ofsContent ? parseStatementsFromTRContent(ofsContent, curYear) : null;
+  const cfs = cfsContent ? parseStatementsFromTRContent(cfsContent, curYear) : null;
+  return { ofs, cfs, curYear };
+}
+
+/**
+ * 회사의 사업보고서 N건을 fetch → 연도별 BS/IS/CF 추출 → mergeAuditResults로 누적.
+ * 결과 shape는 AuditReportResult 그대로 (Stage 1.5 ↔ Stage 3 폴백 chain에서 호환).
+ */
+async function extractAnnualReportStatements(
+  corpCode: string,
+  years: string[],
+): Promise<AuditReportResult> {
+  const apiKey = getApiKey();
+  const empty: AuditReportResult = { ofs: null, cfs: null };
+  try {
+    const minYear = Math.min(...years.map(Number));
+    const listParams = new URLSearchParams({
+      crtfc_key: apiKey,
+      corp_code: corpCode,
+      bgn_de: `${minYear - 1}0101`,
+      end_de: "20261231",
+      pblntf_ty: "A",
+      page_count: "30",
+    });
+    const listRes = await fetch(`${DART_API_BASE}/list.json?${listParams}`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    const listJson = await listRes.json();
+    const reports: { rcept_no: string; report_nm: string }[] = (listJson.list || []).filter(
+      (it: { report_nm?: string }) => /사업보고서/.test(it.report_nm || "") && !/기재정정/.test(it.report_nm || ""),
+    );
+    if (!reports.length) {
+      console.log(`[DART] Stage 1.5 — 사업보고서 0건. 폴백 불가.`);
+      return empty;
+    }
+
+    const needed = Math.min(Math.ceil(years.length / 2), reports.length);
+    const selected = reports.slice(0, needed);
+    console.log(`[DART] Stage 1.5 — 사업보고서 ${selected.length}건 병렬 파싱`);
+
+    const parsed = await Promise.all(
+      selected.map((r) => parseStatementsFromAnnualReportXml(r.rcept_no, r.report_nm, years)),
+    );
+
+    const ofsAcc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], cfRows: [] as FinancialRow[], dataYears: [] as string[], accountingStandard: undefined as AccountingStandard | undefined };
+    const cfsAcc = { bsRows: [] as FinancialRow[], isRows: [] as FinancialRow[], cfRows: [] as FinancialRow[], dataYears: [] as string[], accountingStandard: undefined as AccountingStandard | undefined };
+    let accountingStandardChanged = false;
+    const mergedNotes: Record<string, string> = {};
+
+    for (const p of parsed) {
+      if (!p) continue;
+      if (p.ofs) {
+        const merged = mergeAuditResults(ofsAcc, p.ofs);
+        if (!merged) accountingStandardChanged = true;
+        if (p.ofs.notesSections) {
+          for (const [k, v] of Object.entries(p.ofs.notesSections)) {
+            if (!mergedNotes[k]) mergedNotes[k] = v;
+          }
+        }
+      }
+      if (p.cfs) {
+        const merged = mergeAuditResults(cfsAcc, p.cfs);
+        if (!merged) accountingStandardChanged = true;
+      }
+    }
+
+    const ofsHasData = ofsAcc.bsRows.length > 0 || ofsAcc.isRows.length > 0;
+    const cfsHasData = cfsAcc.bsRows.length > 0 || cfsAcc.isRows.length > 0;
+    if (ofsHasData) ofsAcc.dataYears = [...new Set(ofsAcc.dataYears)].sort();
+    if (cfsHasData) cfsAcc.dataYears = [...new Set(cfsAcc.dataYears)].sort();
+
+    console.log(`[DART] Stage 1.5 결과 — OFS: BS ${ofsAcc.bsRows.length}/IS ${ofsAcc.isRows.length}/CF ${ofsAcc.cfRows.length} 행, CFS: BS ${cfsAcc.bsRows.length}/IS ${cfsAcc.isRows.length}/CF ${cfsAcc.cfRows.length} 행`);
+
+    return {
+      ofs: ofsHasData ? ofsAcc : null,
+      cfs: cfsHasData ? cfsAcc : null,
+      notesSections: Object.keys(mergedNotes).length > 0 ? mergedNotes : undefined,
+      accountingStandardChanged: accountingStandardChanged || undefined,
+    };
+  } catch (e) {
+    console.warn(`[DART] extractAnnualReportStatements 실패:`, e instanceof Error ? e.message : e);
     return empty;
   }
 }
@@ -1861,7 +2098,90 @@ function processRawStatements(
   return { bsRows, isRows, cfRows, ratios };
 }
 
+/**
+ * Stage 1 결과의 데이터 품질 점검. 핵심 4계정(매출/자산총계/부채총계/자본총계)이
+ * 요청 연도 전부에 존재하는지 + 분기보고서/연도 커버리지 조건을 확인.
+ *
+ * Safety guard: 4계정 모두 N-1 연도 이상 매칭되면 (정상 상장사 false positive 방지)
+ * 무조건 ok=true. K-GAAP→K-IFRS 전환된 회사가 1년 비는 케이스도 healthy로 인정.
+ *
+ * Unhealthy 사유 예: 프로젠 — 23년 K-GAAP 라인 drop으로 매출/자산총계 23년 칸 비움.
+ */
+function isStage1Healthy(
+  bs: FinancialRow[],
+  is: FinancialRow[],
+  _cf: FinancialRow[],
+  displayYears: string[],
+  stats: { allQuarterly: boolean; yearsWithData: number; totalYears: number }
+): { ok: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  const N = displayYears.length;
+  const normalize = (s: string) => (s || "").replace(/\s/g, "");
+
+  function findRow(rows: FinancialRow[], regex: RegExp): FinancialRow | null {
+    return rows.find((r) => regex.test(normalize(r.account))) || null;
+  }
+  function valueStatus(row: FinancialRow | null): { missingYears: string[] } {
+    if (!row) return { missingYears: [...displayYears] };
+    const missing: string[] = [];
+    for (const y of displayYears) {
+      const v = row[y];
+      if (v === undefined || v === null || v === "" || v === "-" || v === "0") missing.push(y);
+    }
+    return { missingYears: missing };
+  }
+
+  const revRow = findRow(is, /^(매출액|영업수익|매출|보험수익|보험료수익|순영업수익|공사수익|분양수익|도급수익)$/);
+  const assetRow = findRow(bs, /^자산총계$/);
+  const liabRow = findRow(bs, /^부채총계$/);
+  const equityRow = findRow(bs, /^자본총계$/);
+
+  const revStat = valueStatus(revRow);
+  const assetStat = valueStatus(assetRow);
+  const liabStat = valueStatus(liabRow);
+  const equityStat = valueStatus(equityRow);
+
+  // 4계정 모두 ≥ N-1 연도 매칭되면 healthy로 확정 (정상 상장사 false positive 방지)
+  if (N >= 2) {
+    const fullCount = [revStat, assetStat, liabStat, equityStat].filter((s) => s.missingYears.length <= 1).length;
+    if (fullCount === 4) return { ok: true, reasons: [] };
+  }
+
+  if (revStat.missingYears.length > 0) {
+    reasons.push(`매출/영업수익 ${revRow ? "연도 누락" : "행 없음"} (missing=${revStat.missingYears.join(",") || "row"})`);
+  }
+  if (assetStat.missingYears.length > 0) {
+    reasons.push(`자산총계 ${assetRow ? "연도 누락" : "행 없음"} (missing=${assetStat.missingYears.join(",") || "row"})`);
+  }
+  if (liabStat.missingYears.length > 0) {
+    reasons.push(`부채총계 ${liabRow ? "연도 누락" : "행 없음"} (missing=${liabStat.missingYears.join(",") || "row"})`);
+  }
+  if (equityStat.missingYears.length > 0) {
+    reasons.push(`자본총계 ${equityRow ? "연도 누락" : "행 없음"} (missing=${equityStat.missingYears.join(",") || "row"})`);
+  }
+  if (stats.allQuarterly && N > 0) {
+    reasons.push("모든 연도가 분기보고서 (사업보고서 미공시)");
+  }
+  if (stats.totalYears > 0 && stats.yearsWithData < stats.totalYears * 0.5) {
+    reasons.push(`데이터 있는 연도 ${stats.yearsWithData}/${stats.totalYears} (<50%)`);
+  }
+
+  return { ok: reasons.length === 0, reasons };
+}
+
 export async function buildFinancialData(
+  corpCode: string,
+  years: string[],
+  stockCode?: string
+): Promise<FinancialResult> {
+  try {
+    return await _buildFinancialDataImpl(corpCode, years, stockCode);
+  } finally {
+    clearAnnualXmlCache();
+  }
+}
+
+async function _buildFinancialDataImpl(
   corpCode: string,
   years: string[],
   stockCode?: string
@@ -1926,6 +2246,10 @@ export async function buildFinancialData(
   const allResults = await Promise.all(allFetches);
 
   // OFS/CFS 별로 결과 분류 및 처리
+  // Stage 1.5 폴백 판단을 위해 각 fsDiv 의 health 결과와 displayYears 보존
+  type Stage1Health = { ok: boolean; reasons: string[] };
+  const stage1Health: { ofs?: Stage1Health; cfs?: Stage1Health } = {};
+
   for (const [fsLabel, fsDiv] of [["개별", "OFS"], ["연결", "CFS"]] as const) {
     const rawByYear: Record<string, DartRawItem[]> = {};
     let hasData = false;
@@ -1978,18 +2302,35 @@ export async function buildFinancialData(
       }
     }
 
+    // Stage 1 결과 품질 점검 (Stage 1.5 폴백 판단용)
+    const yearsWithData = years.filter((y) => (rawByYear[y] || []).length > 0).length;
+    const reprtCodes = Object.values(yearReprtMap);
+    const allQuarterly = reprtCodes.length === years.length && reprtCodes.every((c) => c && c !== "11011");
+    const health = isStage1Healthy(bsRows, isRows, cfRows, displayYears, {
+      allQuarterly,
+      yearsWithData,
+      totalYears: years.length,
+    });
+    if (!health.ok) {
+      console.log(`[DART] ${fsLabel} Stage 1 health=NG — reasons: ${health.reasons.join(" / ")}`);
+    }
+
     if (fsDiv === "OFS") {
       result.bsItems = bsRows;
       result.isItems = isRows;
       result.cfItems = cfRows;
       result.ratios = newRatios;
       result.hasOfs = true;
+      result.extractionSourceOfs = "stage1";
+      stage1Health.ofs = health;
     } else {
       result.bsItemsCfs = bsRows;
       result.isItemsCfs = isRows;
       result.cfItemsCfs = cfRows;
       result.ratiosCfs = newRatios;
       result.hasCfs = true;
+      result.extractionSourceCfs = "stage1";
+      stage1Health.cfs = health;
     }
 
     // displayYears 저장 (기존 years 대체)
@@ -2001,6 +2342,49 @@ export async function buildFinancialData(
   }
 
   if (gotFull) {
+    // ── Stage 1.5: Stage 1 sparse 감지 시 사업보고서 본문 BS/IS/CF 폴백 ──
+    // 비상장 외감법인(프로젠 등) 또는 K-GAAP→K-IFRS 전환된 회사는 fnlttSinglAcntAll
+    // 응답이 sparse하거나 K-GAAP 라인 drop으로 한 해가 거의 빈다. 이때 동일 연도
+    // 사업보고서 본문 XML에서 BS/IS/CF를 직접 추출해 REPLACE.
+    const ofsUnhealthy = result.hasOfs && stage1Health.ofs !== undefined && !stage1Health.ofs.ok;
+    const cfsUnhealthy = result.hasCfs && stage1Health.cfs !== undefined && !stage1Health.cfs.ok;
+    if (ofsUnhealthy || cfsUnhealthy) {
+      console.log(`[DART] Stage 1.5 진입 — 사업보고서 본문 폴백 시도 (ofsUnhealthy=${ofsUnhealthy}, cfsUnhealthy=${cfsUnhealthy})`);
+      const annual = await extractAnnualReportStatements(corpCode, years);
+
+      // 사업보고서 본문 데이터는 plain year 키 ("2024") 사용 → result.years 도 plain으로 재설정
+      // (Stage 1 분기 displayYears "2024.09"와 충돌하므로 통일)
+      const wantsAnnualYearsLabel = ofsUnhealthy && annual.ofs || cfsUnhealthy && annual.cfs;
+      if (wantsAnnualYearsLabel) {
+        result.years = [...years];
+      }
+
+      if (ofsUnhealthy && annual.ofs) {
+        result.bsItems = annual.ofs.bsRows;
+        result.isItems = annual.ofs.isRows;
+        result.cfItems = annual.ofs.cfRows;
+        result.ratios = calcRatios(result.bsItems, result.isItems, result.years, result.cfItems);
+        result.hasOfs = true;
+        result.extractionSourceOfs = "annual-report-body";
+        console.log(`[DART] Stage 1.5 OFS REPLACE — BS ${result.bsItems.length}/IS ${result.isItems.length}/CF ${result.cfItems.length} 행`);
+      }
+      if (cfsUnhealthy && annual.cfs) {
+        result.bsItemsCfs = annual.cfs.bsRows;
+        result.isItemsCfs = annual.cfs.isRows;
+        result.cfItemsCfs = annual.cfs.cfRows;
+        result.ratiosCfs = calcRatios(result.bsItemsCfs, result.isItemsCfs, result.years, result.cfItemsCfs);
+        result.hasCfs = true;
+        result.extractionSourceCfs = "annual-report-body";
+        console.log(`[DART] Stage 1.5 CFS REPLACE — BS ${result.bsItemsCfs.length}/IS ${result.isItemsCfs.length}/CF ${result.cfItemsCfs.length} 행`);
+      }
+      if (annual.accountingStandardChanged) {
+        result.accountingStandardChanged = true;
+      }
+      if (annual.notesSections && !result.notesSections) {
+        result.notesSections = annual.notesSections;
+      }
+    }
+
     // ── CF 조정항목(감가상각비/무형자산상각비) 보강 ──
     // Stage 1/2의 fnlttSinglAcntAll API는 영업활동 최상위 항목만 반환.
     // 조정항목 누락 시 EBITDA가 영업이익만 반영 → 사업보고서 XML 주석에서 보강
@@ -2108,6 +2492,7 @@ export async function buildFinancialData(
       result.hasOfs = true;
       result.years = filteredYears;
       result.hasData = true;
+      result.extractionSourceOfs = "audit-report";
     }
 
     // 연결(CFS)
@@ -2124,6 +2509,7 @@ export async function buildFinancialData(
       result.hasCfs = true;
       if (!result.hasOfs) result.years = filteredYears;
       result.hasData = true;
+      result.extractionSourceCfs = "audit-report";
     }
 
     // 주석 섹션 전달
