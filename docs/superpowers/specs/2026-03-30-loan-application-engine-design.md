@@ -1,3 +1,5 @@
+<!-- STATUS: REFERENCE — loan-engine 설계 기준 문서. app/src/lib/loan-engine/ 구현의 참고용으로 보존 -->
+
 # 여신승인신청서 생성 엔진 설계서
 
 > 작성일: 2026-03-30

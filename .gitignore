@@ -39,6 +39,11 @@ Thumbs.db
 # Archive & Reference (대용량 참고자료, git에 포함하지 않음)
 _archive/
 _reference/
+docs.backup/
+screenshots/
+
+# Claude Code session locks
+.claude/scheduled_tasks.lock
 
 # 이전 프로젝트 복사본
 loan-app-next/
@@ -55,10 +60,7 @@ deploy.sh
 app/guide.html
 
 # Internal documents (contain real names, deal structures, client data)
-docs/blueprint-loan-application-automation.md
-docs/Cowork_활용가이드_v2.md
-docs/SKILL_v2.md
-docs/2026-03-26-audit-xml-parsing-improvement.md
+docs/_obsolete/
 여신심사_워크스페이스/
 
 # IDE

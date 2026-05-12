@@ -1,0 +1,15 @@
+.vercel
+
+# Fixture/dump text files (large DART XML/PDF dumps for local debug)
+_v4_*.txt
+test-hyosung-*.xml.txt
+
+# Ad-hoc TypeScript test/fetch scripts (tsc compile target, but not part of app)
+test-*.ts
+test-*.mts
+fetch_*.ts
+fetch_*.mjs
+fetch-*.ts
+fetch-*.mjs
+gen-*.ts
+gen-*.mjs

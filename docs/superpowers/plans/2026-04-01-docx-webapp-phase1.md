@@ -1,3 +1,5 @@
+<!-- STATUS: INCOMPLETE — CLAUDE.md에 완료 마커 없음. CLAUDE.md "완료 (2026-03-31) 여신검토 워크플로우 Phase 1~3"이 부분적으로 본 plan을 실행함. Phase 4~5(viewpoint 검색, 승인, 신청서 연동) 미구현 -->
+
 # Phase 1: ReviewDeal → DOCX 초안 생성 웹앱 통합
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

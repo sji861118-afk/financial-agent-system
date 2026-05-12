@@ -1,3 +1,5 @@
+<!-- STATUS: ACTIVE — loan-engine 진행 중. CLAUDE.md "완료 (2026-03-31)" 섹션의 equity-pledge 플러그인은 본 plan의 일부 -->
+
 # Loan Engine Phase 0.5 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

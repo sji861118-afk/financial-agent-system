@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>여신승인신청서 자동 생성 (로컬)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: '맑은 고딕', 'Noto Sans KR', sans-serif; background: #f8f9fa; color: #1a1a1a; }
+  .container { max-width: 800px; margin: 40px auto; padding: 0 20px; }
+  h1 { font-size: 22px; margin-bottom: 8px; }
+  .subtitle { color: #666; font-size: 14px; margin-bottom: 32px; }
+  .card { background: #fff; border-radius: 12px; padding: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 20px; }
+  .card h2 { font-size: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .num { background: #4f46e5; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: #444; }
+  input[type="text"] { width: 100%; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; transition: border .2s; }
+  input[type="text"]:focus { border-color: #4f46e5; }
+
+  .drop-zone { border: 2px dashed #ccc; border-radius: 12px; padding: 40px 20px; text-align: center; cursor: pointer; transition: all .2s; margin-top: 8px; }
+  .drop-zone:hover, .drop-zone.dragover { border-color: #4f46e5; background: #f0f0ff; }
+  .drop-zone p { color: #888; font-size: 14px; }
+  .drop-zone .icon { font-size: 36px; margin-bottom: 8px; }
+  .drop-zone input { display: none; }
+
+  .file-list { margin-top: 12px; }
+  .file-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: #f5f5f5; border-radius: 8px; margin-bottom: 6px; font-size: 13px; }
+  .file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-item .size { color: #888; margin-left: 12px; }
+  .file-item .remove { background: none; border: none; color: #e53e3e; cursor: pointer; font-size: 16px; padding: 2px 6px; border-radius: 4px; }
+  .file-item .remove:hover { background: #fee; }
+
+  .actions { display: flex; gap: 12px; margin-top: 24px; }
+  .btn { padding: 12px 28px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: 8px; }
+  .btn-primary { background: #4f46e5; color: #fff; }
+  .btn-primary:hover { background: #4338ca; }
+  .btn-primary:disabled { background: #a5b4fc; cursor: not-allowed; }
+  .btn-secondary { background: #e5e7eb; color: #374151; }
+  .btn-secondary:hover { background: #d1d5db; }
+
+  .spinner { width: 18px; height: 18px; border: 2.5px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .status { margin-top: 20px; padding: 16px; border-radius: 8px; font-size: 14px; }
+  .status.info { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+  .status.success { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+  .status.error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+
+  .report-section { margin-top: 16px; }
+  .report-bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+  .report-bar-fill { height: 100%; border-radius: 4px; transition: width .5s; }
+  .report-bar-fill.high { background: #22c55e; }
+  .report-bar-fill.mid { background: #f59e0b; }
+  .report-bar-fill.low { background: #ef4444; }
+  .report-detail { font-size: 13px; color: #555; margin: 4px 0; }
+  .report-pct { font-size: 28px; font-weight: 700; }
+  .report-pct.high { color: #22c55e; }
+  .report-pct.mid { color: #f59e0b; }
+  .report-pct.low { color: #ef4444; }
+
+  .mode-toggle { display: flex; gap: 0; margin-bottom: 16px; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
+  .mode-toggle button { flex: 1; padding: 10px; border: none; background: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s; }
+  .mode-toggle button.active { background: #4f46e5; color: #fff; }
+
+  .footer { text-align: center; color: #aaa; font-size: 12px; margin-top: 40px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>여신승인신청서 자동 생성</h1>
+  <p class="subtitle">파일을 업로드하면 DART 재무데이터 + 리스크 분석을 포함한 DOCX 초안을 자동 생성합니다.</p>
+
+  <!-- Step 1: 차주명 -->
+  <div class="card">
+    <h2><span class="num">1</span> 차주 정보</h2>
+    <label for="borrowerName">차주명 (DART 자동 조회용)</label>
+    <input type="text" id="borrowerName" placeholder="예: 에이엠플러스자산개발" />
+  </div>
+
+  <!-- Step 2: 파일 업로드 -->
+  <div class="card">
+    <h2><span class="num">2</span> 파일 업로드</h2>
+    <p style="font-size:13px; color:#666; margin-bottom:12px;">IM, 감정평가서, 재무제표(Excel/PDF), 검토의견서 등을 업로드하세요.</p>
+    <div style="display:flex; gap:8px; margin-bottom:12px;">
+      <button class="btn btn-secondary" style="padding:8px 16px; font-size:13px;" onclick="fileInput.click()">파일 선택</button>
+      <button class="btn btn-secondary" style="padding:8px 16px; font-size:13px;" onclick="folderInput.click()">폴더 선택</button>
+    </div>
+    <div class="drop-zone" id="dropZone">
+      <div class="icon">📁</div>
+      <p>파일 또는 <b>폴더</b>를 드래그하여 업로드</p>
+      <p style="font-size:12px; color:#aaa; margin-top:4px;">PDF, XLSX, DOCX, HWP, PPTX, JPG, PNG — 폴더 드롭 시 하위 파일 전체 포함</p>
+      <input type="file" id="fileInput" multiple accept=".pdf,.xlsx,.xls,.docx,.hwp,.pptx,.jpg,.png" />
+      <input type="file" id="folderInput" webkitdirectory multiple style="display:none" />
+    </div>
+    <div class="file-list" id="fileList"></div>
+    <div id="fileCount" style="font-size:13px; color:#4f46e5; font-weight:600; margin-top:8px;"></div>
+  </div>
+
+  <!-- Step 3: 메모 -->
+  <div class="card">
+    <h2><span class="num">3</span> 추가 메모 (선택)</h2>
+    <textarea id="memo" rows="3" style="width:100%; padding:10px 14px; border:1px solid #ddd; border-radius:8px; font-size:14px; resize:vertical; outline:none; font-family:inherit;" placeholder="검토 시 참고할 사항이 있으면 입력하세요"></textarea>
+  </div>
+
+  <!-- Actions -->
+  <div class="actions">
+    <button class="btn btn-secondary" onclick="handleCheck()" id="btnCheck" disabled>
+      완성도 분석
+    </button>
+    <button class="btn btn-primary" onclick="handleGenerate()" id="btnGenerate" disabled>
+      신청서 생성 (DOCX)
+    </button>
+  </div>
+
+  <!-- Status -->
+  <div id="statusArea"></div>
+
+  <!-- Report -->
+  <div id="reportArea"></div>
+</div>
+
+<div class="footer">
+  여신승인신청서 자동생성 도구 (로컬 전용) &mdash; DART API + loan-engine
+</div>
+
+<script>
+const files = [];
+const SUPPORTED_EXT = /\.(pdf|xlsx?|docx|hwp|pptx?|jpe?g|png)$/i;
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const folderInput = document.getElementById('folderInput');
+const fileList = document.getElementById('fileList');
+
+// Drop zone — 폴더 드롭 지원 (webkitGetAsEntry 재귀 탐색)
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', async e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+
+  const items = e.dataTransfer.items;
+  if (items && items.length > 0 && items[0].webkitGetAsEntry) {
+    // 폴더 또는 파일 — Entry API로 재귀 탐색
+    const entries = [];
+    for (const item of items) {
+      const entry = item.webkitGetAsEntry();
+      if (entry) entries.push(entry);
+    }
+    showStatus('info', '폴더 스캔 중...');
+    const scanned = await scanEntries(entries);
+    addFiles(scanned);
+    showStatus('info', `${scanned.length}개 파일 추가됨`);
+    setTimeout(() => document.getElementById('statusArea').innerHTML = '', 2000);
+  } else {
+    addFiles(Array.from(e.dataTransfer.files));
+  }
+});
+
+// 파일 선택
+fileInput.addEventListener('change', e => {
+  addFiles(Array.from(e.target.files));
+  e.target.value = '';
+});
+
+// 폴더 선택 (webkitdirectory)
+folderInput.addEventListener('change', e => {
+  const allFiles = Array.from(e.target.files).filter(f => SUPPORTED_EXT.test(f.name));
+  addFiles(allFiles);
+  showStatus('info', `폴더에서 ${allFiles.length}개 파일 추가됨`);
+  setTimeout(() => document.getElementById('statusArea').innerHTML = '', 2000);
+  e.target.value = '';
+});
+
+/** Entry API로 폴더 재귀 탐색 → File[] 반환 */
+async function scanEntries(entries) {
+  const result = [];
+  const queue = [...entries];
+
+  while (queue.length > 0) {
+    const entry = queue.shift();
+    if (entry.isFile) {
+      const file = await new Promise(resolve => entry.file(resolve));
+      if (SUPPORTED_EXT.test(file.name) && file.size > 0) {
+        // webkitRelativePath 대신 fullPath 활용해 경로 보존
+        Object.defineProperty(file, '_path', { value: entry.fullPath, writable: false });
+        result.push(file);
+      }
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const children = await new Promise(resolve => {
+        const all = [];
+        const readBatch = () => {
+          reader.readEntries(batch => {
+            if (batch.length === 0) { resolve(all); return; }
+            all.push(...batch);
+            readBatch(); // 100개 이상일 때 반복 호출 필요
+          });
+        };
+        readBatch();
+      });
+      queue.push(...children);
+    }
+  }
+  return result;
+}
+
+function addFiles(newFiles) {
+  for (const f of newFiles) {
+    const key = (f._path || f.webkitRelativePath || f.name) + '|' + f.size;
+    if (!files.some(x => ((x._path || x.webkitRelativePath || x.name) + '|' + x.size) === key)) {
+      files.push(f);
+    }
+  }
+  renderFiles();
+  updateButtons();
+}
+
+function removeFile(idx) {
+  files.splice(idx, 1);
+  renderFiles();
+  updateButtons();
+}
+
+function renderFiles() {
+  // 경로별 그룹핑
+  const grouped = {};
+  files.forEach((f, i) => {
+    const path = f._path || f.webkitRelativePath || '';
+    const parts = path.split('/').filter(Boolean);
+    const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : '(루트)';
+    if (!grouped[folder]) grouped[folder] = [];
+    grouped[folder].push({ file: f, idx: i });
+  });
+
+  let html = '';
+  const folders = Object.keys(grouped).sort();
+  const showFolders = folders.length > 1 || (folders.length === 1 && folders[0] !== '(루트)');
+
+  for (const folder of folders) {
+    if (showFolders) {
+      html += `<div style="font-size:12px;color:#888;margin:8px 0 4px;font-weight:600;">📁 ${folder}</div>`;
+    }
+    for (const { file: f, idx: i } of grouped[folder]) {
+      const sizeStr = f.size > 1048576 ? (f.size/1048576).toFixed(1)+'MB' : (f.size/1024).toFixed(0)+'KB';
+      const ext = f.name.split('.').pop().toLowerCase();
+      const icon = ext === 'pdf' ? '📕' : ext.match(/xlsx?/) ? '📗' : ext === 'docx' ? '📘' : ext === 'hwp' ? '📙' : ext.match(/jpe?g|png/) ? '🖼️' : '📄';
+      html += `
+        <div class="file-item">
+          <span style="margin-right:6px;">${icon}</span>
+          <span class="name">${f.name}</span>
+          <span class="size">${sizeStr}</span>
+          <button class="remove" onclick="removeFile(${i})">&times;</button>
+        </div>`;
+    }
+  }
+
+  fileList.innerHTML = html;
+  // 파일 카운트 표시
+  document.getElementById('fileCount').textContent = files.length > 0 ? `${files.length}개 파일 선택됨` : '';
+}
+
+function updateButtons() {
+  const hasFiles = files.length > 0;
+  document.getElementById('btnCheck').disabled = !hasFiles;
+  document.getElementById('btnGenerate').disabled = !hasFiles;
+}
+
+function showStatus(type, msg) {
+  document.getElementById('statusArea').innerHTML = `<div class="status ${type}">${msg}</div>`;
+}
+
+function buildFormData(mode) {
+  const fd = new FormData();
+  files.forEach(f => fd.append('files', f));
+  fd.append('borrowerName', document.getElementById('borrowerName').value);
+  fd.append('memo', document.getElementById('memo').value);
+  fd.append('mode', mode);
+  return fd;
+}
+
+async function handleCheck() {
+  const btn = document.getElementById('btnCheck');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner" style="border-color:rgba(0,0,0,.2);border-top-color:#333;"></div> 분석 중...';
+  showStatus('info', 'DART 재무데이터 조회 + 완성도 분석 중...');
+
+  try {
+    const res = await fetch('/api/review/upload-and-generate', { method: 'POST', body: buildFormData('check') });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '분석 실패');
+    showStatus('success', '완성도 분석 완료!');
+    renderReport(data.report);
+  } catch (e) {
+    showStatus('error', '분석 실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '완성도 분석';
+  }
+}
+
+async function handleGenerate() {
+  const btn = document.getElementById('btnGenerate');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> 생성 중...';
+  showStatus('info', 'DART 조회 → 재무분석 → 리스크 분석 → DOCX 생성 중... (최대 60초)');
+
+  try {
+    const res = await fetch('/api/review/upload-and-generate', { method: 'POST', body: buildFormData('generate') });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || '생성 실패');
+    }
+
+    const blob = await res.blob();
+    const borrower = document.getElementById('borrowerName').value || '초안';
+    const today = new Date().toISOString().slice(0, 10);
+    const filename = `${borrower}_${today}_여신승인신청서.docx`;
+
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+
+    showStatus('success', `신청서 생성 완료! "${filename}" 다운로드됨 (${(blob.size / 1024).toFixed(1)}KB)`);
+  } catch (e) {
+    showStatus('error', '생성 실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '신청서 생성 (DOCX)';
+  }
+}
+
+function renderReport(report) {
+  if (!report) return;
+  const pctClass = report.overall >= 70 ? 'high' : report.overall >= 40 ? 'mid' : 'low';
+
+  let html = `
+    <div class="card report-section">
+      <h2>완성도 리포트</h2>
+      <div style="display:flex;align-items:center;gap:20px;margin-bottom:16px;">
+        <div class="report-pct ${pctClass}">${report.overall}%</div>
+        <div style="flex:1;">
+          <div style="font-size:13px;color:#666;">전체 완성도</div>
+          <div class="report-bar"><div class="report-bar-fill ${pctClass}" style="width:${report.overall}%"></div></div>
+          <div style="font-size:12px;color:#888;">필수항목: ${report.requiredCompleteness}%</div>
+        </div>
+      </div>
+  `;
+
+  if (report.sections) {
+    html += '<div style="margin-top:16px;">';
+    for (const sec of report.sections) {
+      const cls = sec.completeness >= 70 ? 'high' : sec.completeness >= 40 ? 'mid' : 'low';
+      const req = sec.required ? '<span style="color:#e53e3e;font-size:11px;margin-left:4px;">필수</span>' : '';
+      html += `
+        <div style="margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;font-size:13px;">
+            <span>${sec.title}${req}</span>
+            <span class="${cls}" style="font-weight:600;">${sec.completeness}%</span>
+          </div>
+          <div class="report-bar"><div class="report-bar-fill ${cls}" style="width:${sec.completeness}%"></div></div>
+        </div>
+      `;
+    }
+    html += '</div>';
+  }
+
+  if (report.missingDataSuggestions?.length) {
+    html += '<h3 style="font-size:14px;margin:20px 0 8px;">보완 제안</h3>';
+    for (const s of report.missingDataSuggestions) {
+      const pri = s.priority === 'high' ? '🔴' : s.priority === 'medium' ? '🟡' : '🟢';
+      html += `<div class="report-detail">${pri} <strong>${s.dataType}</strong>: ${s.description}</div>`;
+    }
+  }
+
+  html += '</div>';
+  document.getElementById('reportArea').innerHTML = html;
+}
+</script>
+</body>
+</html>

@@ -6,6 +6,16 @@ Vercel 배포, deploy.sh 스크립트, Next.js 16, Firestore 규칙, Git Bash/rs
 
 ---
 
+## 2026-05-08
+- **PowerShell 5.1 `&&` 미지원으로 인한 silent push skip**: Windows 기본 셸 PowerShell 5.1은 `&&`/`||` chain operator를 parser error로 거부. Bash on Git Bash에서 `git commit ... && git push`를 한 명령으로 실행해도 commit은 성공하지만 push가 silent skip(exit 0)되는 케이스 발생. **`git log --oneline origin/main..HEAD`로 미push 확인 필수**. 또는 두 명령 분리 호출. `/ship` 슬래시 커맨드도 step 단위로 분리 호출하도록 명시 (commit 0f3872c 후속 lesson).
+- **`git add <file>` 사이드이펙트 — 사용자 unstaged 변경분 동시 staging**: 같은 파일에 사용자가 미리 손댄 unstaged 변경이 있으면 `git add path/to/file` 한 번에 모두 staged됨. CLAUDE.md case에서 의도한 3 line 변경에 사용자의 89 line 정리 작업이 함께 commit. 의도와 일관할 때만 안전. 방어법: stage 후 `git diff --cached <file>`로 확인하거나 `git add -p`로 hunk 단위 staging. **PreToolUse hook으로 `git diff --cached --name-status` stderr preview 권장**.
+- **README ↔ CHANGELOG-* 링크 drift 감지 패턴**: README가 link하는 CHANGELOG-APPRAISAL.md / CHANGELOG-DEPLOY.md가 git에 untracked 상태로 존재 가능. README 갱신 시 cross-check 안 하면 invisible. `git ls-files --error-unmatch` 또는 deploy.sh Step 0에서 link target 검증 hook 권장.
+- **production JWT_SECRET drift from `||` fallback default**: 코드의 `process.env.JWT_SECRET || "loan-app-jwt-secret-key-2024-change-in-production"` 패턴은 local dev에서만 fallback 의도. production Vercel env에는 다른 secret 설정됨 → dev 스크립트가 default로 mint한 JWT는 production에서 9/9 "세션이 만료되었습니다" 거부. 회귀 검증/baseline 스크립트는 (a) local dev server 띄우고 호출, (b) `vercel env pull`로 secret 받기, 또는 (c) `~/.config/loan-app-next/regression.env` wrapper 중 하나 필요. **2026-05-08 학습 항목과 contradicts: "프로덕션 secret과 같은 값"이라는 prior assumption은 wrong**.
+- **deploy.sh robocopy 한국어 경로 mojibake (cosmetic only)**: Git Bash on Windows에서 robocopy /MIR 실행 시 stdout이 cp1252 코드페이지로 출력되어 한국어 경로가 `*�߰� ���͸�` 같이 깨져 보임. 실제 파일 복사는 UTF-16 LE 기반 NTFS layer라 정상. 가독성 문제만 있음. `chcp 65001 >NUL` 사전 호출 또는 rsync 사용으로 회피 가능.
+- **rsync/robocopy `--delete`/`/MIR`은 라우트 삭제 transparent**: 메인 레포에서 route file 삭제 후 deploy.sh 실행 시 별도 cleanup step 없이 mirror에서도 자동 제거됨. diag-da/diag-fetch route 삭제 검증 완료 (commit 1938f12 + 헬스체크 5/5 pass).
+- **Next.js 16 `.next/dev/types/routes.d.ts` stale cache after route deletion**: API route 디렉토리 삭제 후 `npx tsc --noEmit` 실행 시 `.next/dev/types/routes.d.ts`에 phantom 엔트리가 남아 false TS error 발생. 빌드 시 자동 재생성되므로 운영 영향 없음. 검증 명령: `npx tsc --noEmit 2>&1 | grep -v "^\.next/"`.
+- **/ship 슬래시 커맨드 도입** (`~/.claude/commands/ship.md`): commit + push + deploy.sh + 헬스체크 step별 자동화. **docs-only 변경(README/CHANGELOG/docs/* 만)은 deploy skip 분기 포함** — Vercel 빌드 ~3분 절약. user-level이라 README "실행 방법"에는 미기재 (사용자 에이전트 환경 한정).
+
 ## 2026-04-23
 - **Vercel default region(iad1)↔DART korea 60초 timeout**: `buildFinancialData` 한 번 호출에 30초+, 사업보고서 ZIP 보강 추가 시 FUNCTION_INVOCATION_TIMEOUT. `app/vercel.json`에 `{"regions":["icn1"]}` 설정 → 1.2초로 단축 (50배+). **deploy.sh가 src/만 sync하고 vercel.json은 누락하던 버그 동시 수정** — rsync/robocopy 두 분기 모두에 `cp vercel.json` 추가.
 

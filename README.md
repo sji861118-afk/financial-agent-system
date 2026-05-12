@@ -179,6 +179,15 @@ cd app && ./scripts/deploy.sh
 
 수동 `cp`로 부분 복사 금지 — 파일 세트 불일치로 라우트 404 발생 가능 (2026-04-20 장애 사례).
 
+### 회귀 검증 (선택)
+```bash
+node app/scripts/regression-check.mjs --baseline   # 최초 1회: baseline 생성
+node app/scripts/regression-check.mjs              # 이후: ±5% 변동 감지
+```
+9 KOSPI/KOSDAQ 회사(삼성전자/LG화학/SK하이닉스/카카오/셀트리온/NAVER/현대건설/대우건설/효성중공업) × 5 핵심 비율(부채비율/영업이익률/이자보상배율/매출증가율/자기자본비율) 자동 비교. 대시보드/calcRatios 변경 후 fragile path 보호 목적.
+
+> **알려진 블로커**: production JWT_SECRET이 default와 다른 환경에서는 인증 실패. local dev server(`npm run dev`) 띄우고 `--base=http://localhost:3000`로 실행하거나, `~/.config/loan-app-next/regression.env`에 production secret 저장 후 `regression-baseline.sh` wrapper 사용 권장.
+
 ## 작업 컨텍스트 (Claude용)
 > 이 섹션은 Claude Code가 프로젝트를 이어받을 때 참조하는 구간입니다.
 
@@ -241,7 +250,9 @@ Track A(웹앱)는 범용 재무데이터 조회 도구이고, Track B(신청서
 │   │   │   └── *.ts          #     ─ dart-api, financial-analyzer, excel-generator 등
 │   │   └── types/
 │   ├── public/
-│   ├── scripts/deploy.sh     #    rsync → Vercel → 라우트 헬스체크 → 자동 롤백
+│   ├── scripts/
+│   │   ├── deploy.sh         #    rsync → Vercel → 라우트 헬스체크 → 자동 롤백
+│   │   └── regression-check.mjs # 9사 × 5비율 회귀 검증 (±5% 변동 감지)
 │   └── vercel.json           #    icn1 region pinned
 │
 ├── docx-generator/           # ── Track B: 신청서 작성 (Claude Code, 로컬 CLI)
@@ -276,15 +287,17 @@ Track A(웹앱)는 범용 재무데이터 조회 도구이고, Track B(신청서
 ## 알려진 이슈
 
 - 분기보고서 전기 데이터(frmtrm_add_amount)의 누적금액 정확성 미검증
-- 감사보고서 파싱 수정 후 일부 기업 실데이터 검증 미완 + **회계기준(K-IFRS/K-GAAP) 변경 회사 휴리스틱 false positive 모니터링 필요** (비율 임계값 튜닝 후속 작업)
-- 일부 감사보고서 ZIP에 재무상태표 본문 없음 (특정 연도 연결 등)
+- **회계기준(K-IFRS/K-GAAP) 변경 회사 휴리스틱 false positive 모니터링 필요** (비율 임계값 튜닝은 9사 회귀 baseline 확보 후 조정 예정)
+- 일부 감사보고서 ZIP에 재무상태표 본문 없음 (특정 연도 연결 등) — 2026-04-28 "가장 큰 .xml 선택" 룰로 일부 해결, 반기/분기 path 일반화는 follow-up
 - 계정명이 완전히 다른 경우(공사미수금↔미수금) 자동 merge 불가
-- 일부 회사가 사업보고서에 연결재무제표 미제출 시 빈값으로 표시 — UI 안내 메시지 추가 필요
+- 일부 회사가 사업보고서에 연결재무제표 미제출 시 빈값으로 표시 — UI 안내 메시지 추가 필요 (`accountingStandardChanged` 메타플래그 인프라 활용 예정)
+- 9사 회귀 검증 baseline 미확보 — production JWT_SECRET drift로 인한 차단, local dev mode 또는 secret wrapper 필요
 
 ## 버전 이력
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|---------|
+| v2.2.1 | 2026-05-08 | **인프라 정리 + 회귀 검증 인프라** — 임시 진단 endpoint 2종(`/api/dart/diag-da`, `/api/dart/diag-fetch`) 제거(1938f12), CHANGELOG-APPRAISAL/DEPLOY 신규 git tracking(e0621dd), CLAUDE.md Lessons 인라인 → 도메인별 CHANGELOG 링크로 정리(0f3872c), 9사 × 5비율 회귀 검증 스크립트 신규(`app/scripts/regression-check.mjs`, 3bc3c1d), v2.2 dashboard 문서화 보강(acb7623). 5 commit · production 헬스체크 5/5 통과 |
 | v2.2 | 2026-05-07 | **/financial 차트 대시보드 + Excel 1.대시보드 시트** — form+table → recharts 차트 대시보드 교체 (16 신규 컴포넌트 `app/src/components/financial-dashboard/`: 회사헤더, 매출추이 ComposedChart, 3-up 손익, 현금흐름 워터폴, 건전성 RadarChart, 비율 KPI grid, 주주 도넛, 차입금 표, 감사인 의견, 리스크/기회, AI 분석 탭, 상세 BS/IS/CF 서브탭, OFS/CFS shadcn Tabs). Excel 1.요약 → 1.대시보드 시트로 재구성 (12 섹션 + 데이터바 + 차트 스타일). 비율 버그 4건 수정 — vsBenchmark↔riskLevel 필드 분리, "배"/"회" 단위 손실 (parseRatioValueForExcel), benchmarkLabel propagation, K-IFRS↔K-GAAP 매출 fallback (getRevenueByYear: 매출총이익+\|매출원가\| accounting identity). recharts 3.x Tooltip intersection bug 회피 (content prop 직접 렌더). 4사 검증 (한화·제넥신·프로젠·셀리드). DartPoint AI MCP 평가 결과: skip (90% 중복) |
 | v2.1 | 2026-04-28 | **DART 추출 정확도 보강** — 8 commit (ZIP 본문 파일 선택, K-IFRS/K-GAAP 자동 폐기, 이자비용 dual-source 통일, BS 자본 sub-rank, 매출 키워드 보강, 종합소견 mergeCells, 코넥스 진단 endpoint). 프로젠 25년 IS 0→163, 셀리드 이자보상배율 dual-source 일치 |
 | v2.0 | 2026-04-17~20 | **Track C 감정평가 자동화 v3** — 5 Phase 신규 구현 (2 감수 에이전트 + 3 property templates + 5 sheet builders + parser-adapter + API/UI), 실 PDF 2종 E2E 5/5 통과, 감수의견 품질 개선 (false positive 제거 + 통계 분석), 13 커밋 |

@@ -1,3 +1,5 @@
+<!-- STATUS: SUPERSEDED — appraisal-parser-v2 (2026-04-01)이 후속 구현, completed-plans/로 이동됨 -->
+
 # 감정평가서 분석 자동화 구현 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
