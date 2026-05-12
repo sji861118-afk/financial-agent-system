@@ -385,164 +385,6 @@ function refineDepthBySumDetection(
   }
 }
 
-// ── 표준 손익계산서 계정과목 순서 (DART ord 필드가 부정확한 경우 대비) ──
-const IS_STANDARD_ORDER: [string[], number][] = [
-  // [매칭 키워드 배열, 순서 번호]  — normalizeAcct 결과로 비교
-  [["매출액", "영업수익", "수익(매출액)", "순영업수익", "영업이익(수익)",
-    "공사수익", "분양수익", "도급수익", "건설수익",        // 건설업
-    "보험수익", "보험료수익", "수입보험료",                // 보험업
-    "이자수익합계", "순이자손익",                          // 금융업
-    "순영업수익합계", "영업수익합계"], 100],
-  [["매출원가", "영업비용", "영업원가",
-    "공사원가", "분양원가", "도급원가", "건설원가",        // 건설업
-    "보험서비스비용", "보험금비용"], 200],                  // 보험업
-  [["매출총이익", "매출총손실", "매출총이익(손실)"], 300],
-  [["판매비와관리비", "판매비와일반관리비", "판관비"], 400],
-  [["영업이익", "영업손실", "영업이익(손실)", "영업손익"], 500],
-  [["기타수익", "영업외수익", "기타영업외수익"], 600],
-  [["기타비용", "영업외비용", "기타영업외비용"], 700],
-  [["금융수익", "이자수익", "순금융수익"], 800],
-  [["금융비용", "금융원가", "이자비용", "순금융비용", "순금융원가"], 900],
-  [["지분법이익", "관계기업투자이익", "지분법투자이익",
-    "관계기업및공동기업투자이익", "종속기업및관계기업투자이익",
-    "관계기업및공동기업투자손익", "관계기업투자손익",
-    "종속기업,관계기업및공동기업투자관련손익",
-    "지분법적용투자이익", "지분법적용투자손익"], 1000],
-  [["지분법손실", "관계기업투자손실", "지분법투자손실", "지분법손익",
-    "관계기업및공동기업투자손실", "종속기업및관계기업투자손실",
-    "지분법적용투자손실"], 1010],
-  [["법인세비용차감전순이익", "법인세비용차감전순손실", "법인세비용차감전순손익",
-    "법인세차감전순이익", "법인세차감전순손실", "법인세차감전계속영업이익",
-    "법인세비용차감전이익", "법인세비용차감전손실", "법인세비용차감전손익"], 1100],
-  [["법인세비용", "법인세수익", "법인세비용(수익)"], 1200],
-  [["계속영업이익", "계속영업손실", "계속영업이익(손실)"], 1300],
-  [["중단영업이익", "중단영업손실", "중단영업이익(손실)", "중단영업손익"], 1400],
-  [["당기순이익", "당기순손실", "당기순이익(손실)", "당기순손익", "분기순이익", "반기순이익"], 1500],
-  [["기타포괄손익", "기타포괄이익", "기타포괄손실"], 1600],
-  [["총포괄손익", "총포괄이익", "당기총포괄손익", "당기총포괄이익",
-    "분기총포괄손익", "반기총포괄손익"], 1700],
-];
-
-// 핵심 키워드 기반 fuzzy 매칭 (IS_STANDARD_ORDER 정확/부분 매칭 실패 시 최종 fallback)
-// 패턴: [정규식, 제외 키워드[], 순서번호]
-const IS_CORE_PATTERNS: [RegExp, string[], number][] = [
-  [/^(매출액|매출$)/, [], 100],
-  [/(공사수익|분양수익|도급수익|건설수익)/, [], 100],
-  [/(공사원가|분양원가|도급원가|건설원가)/, [], 200],
-  [/매출원가/, [], 200],
-  [/매출총이익|매출총손/, [], 300],
-  [/판매비와/, [], 400],
-  [/^영업이익|^영업손실|^영업손익/, [], 500],
-  [/^기타수익|^영업외수익/, [], 600],
-  [/^기타비용|^영업외비용/, [], 700],
-  [/금융수익|^이자수익/, ["포괄"], 800],
-  [/금융비용|금융원가|^이자비용/, ["포괄"], 900],
-  [/(지분법|관계기업|공동기업).*(이익|손익)/, ["잉여금", "자본"], 1000],
-  [/(지분법|관계기업|공동기업).*손실/, ["잉여금", "자본"], 1010],
-  [/법인세.*차감전/, [], 1100],
-  [/^법인세비용|^법인세수익/, [], 1200],
-  [/계속영업/, [], 1300],
-  [/중단영업/, [], 1400],
-  [/(당기순|분기순|반기순)(이익|손실|손익)/, [], 1500],
-  [/^기타포괄/, [], 1600],
-  [/총포괄/, [], 1700],
-];
-
-// ── BS 섹션 분류 및 재정렬 헬퍼 ──
-const BS_LIAB_KEYWORDS = [
-  "부채총계", "유동부채", "비유동부채",
-  "차입금", "차입부채", "단기차입금", "장기차입금",
-  "사채", "회사채", "전환사채", "교환사채",
-  "미지급금", "미지급비용", "미지급법인세",
-  "선수금", "선수수익", "예수금",
-  "충당부채", "퇴직급여부채", "순확정급여부채",
-  "이연법인세부채", "당기법인세부채",
-  "보험계약부채", "투자계약부채", "재보험계약부채",
-  "기타계약부채", "특별계정부채",
-  "파생상품부채", "기타금융부채", "기타부채",
-  "유동성장기부채", "리스부채",
-  "매입채무", "단기매입채무",
-];
-const BS_EQUITY_KEYWORDS = [
-  "자본총계", "자본금", "자본잉여금", "자본조정",
-  "이익잉여금", "결손금", "기타포괄손익누계액",
-  "신종자본증권", "비지배지분", "지배기업소유주지분",
-  "기타자본", "기타자본항목", "자기주식",
-];
-
-function classifyBsSectionByName(nm: string): 0 | 1 | 2 | 9 {
-  const n = nm.replace(/[\s()\-·]/g, "");
-  if (n === "자본과부채총계" || n === "부채와자본총계" || n === "부채및자본총계") return 9;
-  if (BS_EQUITY_KEYWORDS.some(k => n === k.replace(/\s/g, "") || n.includes(k.replace(/\s/g, "")))) return 2;
-  if (BS_LIAB_KEYWORDS.some(k => n === k.replace(/\s/g, "") || n.includes(k.replace(/\s/g, "")))) return 1;
-  // 일반 규칙: 계정명에 "부채"가 포함되면 부채 (당기손익-공정가치측정금융부채 등)
-  if (n.includes("부채")) return 1;
-  if (/미지급|선수금|예수금|매입채무/.test(n)) return 1;
-  return 0; // 자산
-}
-
-/**
- * BS 정렬용 sub-rank — 같은 카테고리 내부도 표준 순서로 정렬.
- * - 0.x: 자산 (입력 순서 유지)
- * - 1.x: 부채 (입력 순서 유지)
- * - 2.0~2.6: 자본 sub-rank (자본금→자본잉여금→기타자본→기타포괄→이익잉여금→비지배지분)
- * - 9.1~9.4: 총계 (자산총계→부채총계→자본총계→부채및자본총계)
- *
- * 셀리드 R074-R077의 "기타자본항목→기타포괄→자본금→이익잉여금" 비정상 순서와
- * 자본총계가 부채및자본총계 뒤에 오는 케이스를 한 번에 해결.
- */
-function getBsSortRank(nm: string): number {
-  const n = nm.replace(/[\s()]/g, "");
-  // 총계 4종 — 강제 순서
-  if (n === "자산총계" || n === "자산합계") return 9.1;
-  if (n === "부채총계" || n === "부채합계") return 9.2;
-  if (n === "자본총계" || n === "자본합계") return 9.3;
-  if (n === "자본과부채총계" || n === "부채와자본총계" || n === "부채및자본총계") return 9.4;
-
-  const sec = classifyBsSectionByName(nm);
-  if (sec === 2) {
-    // 자본 sub-rank
-    if (/지배기업소유주지분|지배기업의소유주에게귀속되는지분|지배주주지분/.test(n)) return 2.0;
-    if (/^자본금$|보통주자본금|우선주자본금/.test(n)) return 2.1;
-    if (/자본잉여금|주식발행초과금/.test(n)) return 2.2;
-    if (/자본조정|기타자본|자기주식|신종자본증권/.test(n)) return 2.3;
-    if (/기타포괄손익누계액|기타포괄손익잔액|평가손익누계액/.test(n)) return 2.4;
-    if (/이익잉여금|결손금|미처분이익잉여금|미처리결손금/.test(n)) return 2.5;
-    if (/비지배지분|소수주주지분/.test(n)) return 2.6;
-    return 2.5; // unknown 자본 항목은 이익잉여금 자리
-  }
-  if (sec === 1) return 1.5; // 부채는 입력 순서 유지 (모두 동일 rank)
-  return 0.5; // 자산도 입력 순서 유지
-}
-
-/** BS 항목 배열을 표준 순서로 안정 정렬 (in-place). 같은 rank 항목은 입력 순서 보존. */
-function reorderBsAccounts(order: string[]) {
-  const indexed = order.map((nm, i) => ({ nm, i, rank: getBsSortRank(nm) }));
-  indexed.sort((a, b) => {
-    if (a.rank !== b.rank) return a.rank - b.rank;
-    return a.i - b.i; // stable
-  });
-  order.length = 0;
-  for (const { nm } of indexed) order.push(nm);
-}
-
-function getIsStandardOrder(accountNm: string): number {
-  const norm = normalizeAcct(accountNm);
-  // 1. 정확 매칭 우선
-  for (const [keywords, order] of IS_STANDARD_ORDER) {
-    if (keywords.some((k) => norm === k.replace(/\s/g, ""))) return order;
-  }
-  // 2. 부분 매칭
-  for (const [keywords, order] of IS_STANDARD_ORDER) {
-    if (keywords.some((k) => norm.includes(k.replace(/\s/g, "")))) return order;
-  }
-  // 3. 핵심 키워드 fuzzy 매칭 (업종 특수 계정명 대응)
-  for (const [pattern, excludes, order] of IS_CORE_PATTERNS) {
-    if (pattern.test(norm) && !excludes.some((ex) => norm.includes(ex))) return order;
-  }
-  return -1; // 표준 목록에 없는 항목
-}
-
 function buildStatements(
   rawByYear: Record<string, DartRawItem[]>,
   displayYears: string[],
@@ -603,8 +445,7 @@ function buildStatements(
     }
   }
 
-  // 계정 순서 + depth 추론
-  const isIS = sjFilter.includes("IS") || sjFilter.includes("CIS");
+  // 계정 순서 + depth 추론 — DART ord 순서 그대로 보존 (최신 보고서 우선)
   const accountOrder: { nm: string; depth: number }[] = [];
   const seen = new Set<string>();
   for (const reportYear of Object.keys(rawByYear).sort().reverse()) {
@@ -623,89 +464,9 @@ function buildStatements(
     if (accountOrder.length) break;
   }
 
-  // BS 항목: 자산→자산총계→부채→부채총계→자본→자본총계→자본과부채총계 순서 보장
+  // BS/IS 자체 재정렬 로직은 제거됨.
+  // DART 정식 재무제표(fnlttSinglAcntAll 또는 감사보고서 본문)의 ord 순서를 그대로 따름.
   const isBS = sjFilter.includes("BS");
-  if (isBS && accountOrder.length > 0) {
-    const norm = (s: string) => s.replace(/[\s()]/g, "");
-    const assets: typeof accountOrder = [], liabs: typeof accountOrder = [], equities: typeof accountOrder = [];
-    let tAsset: typeof accountOrder[0] | null = null, tLiab: typeof accountOrder[0] | null = null;
-    let tEquity: typeof accountOrder[0] | null = null, tAll: typeof accountOrder[0] | null = null;
-
-    for (const item of accountOrder) {
-      const n = norm(item.nm);
-      if (n === "자산총계") tAsset = item;
-      else if (n === "부채총계") tLiab = item;
-      else if (n === "자본총계") tEquity = item;
-      else if (n === "자본과부채총계" || n === "부채와자본총계") tAll = item;
-      else {
-        const sec = classifyBsSectionByName(item.nm);
-        if (sec === 2) equities.push(item);
-        else if (sec === 1) liabs.push(item);
-        else assets.push(item);
-      }
-    }
-
-    accountOrder.length = 0;
-    accountOrder.push(...assets);
-    if (tAsset) accountOrder.push(tAsset);
-    accountOrder.push(...liabs);
-    if (tLiab) accountOrder.push(tLiab);
-    accountOrder.push(...equities);
-    if (tEquity) accountOrder.push(tEquity);
-    if (tAll) accountOrder.push(tAll);
-  }
-
-  // IS/CIS 항목: 표준 순서로 재정렬 (DART ord 필드가 부정확한 기업 대비)
-  if (isIS && accountOrder.length > 0) {
-    // 표준 순서가 있는 항목과 없는 항목 분리
-    const withStd: { nm: string; depth: number; stdOrd: number; origIdx: number }[] = [];
-    const withoutStd: { nm: string; depth: number; origIdx: number }[] = [];
-    accountOrder.forEach((item, idx) => {
-      const stdOrd = getIsStandardOrder(item.nm);
-      if (stdOrd >= 0) {
-        withStd.push({ ...item, stdOrd, origIdx: idx });
-      } else {
-        withoutStd.push({ ...item, origIdx: idx });
-      }
-    });
-
-    // 표준 항목은 표준 순서로 정렬
-    withStd.sort((a, b) => a.stdOrd - b.stdOrd);
-
-    // 비표준 항목은 가장 가까운 앞 표준항목 뒤에 배치 (원래 순서 유지)
-    const reordered: { nm: string; depth: number }[] = [];
-    let stdIdx = 0;
-
-    // 표준 항목 사이사이에 비표준 항목을 원래 위치 기준으로 끼워넣기
-    // 방법: 각 비표준 항목의 원래 위치 앞에 있던 마지막 표준항목 찾아서 그 뒤에 배치
-    const insertMap = new Map<number, { nm: string; depth: number }[]>(); // stdOrd → trailing non-std items
-    let lastStdOrd = -1;
-
-    // 원래 순서대로 순회하며, 비표준 항목을 직전 표준항목에 연결
-    for (const item of accountOrder) {
-      const stdOrd = getIsStandardOrder(item.nm);
-      if (stdOrd >= 0) {
-        lastStdOrd = stdOrd;
-      } else {
-        if (!insertMap.has(lastStdOrd)) insertMap.set(lastStdOrd, []);
-        insertMap.get(lastStdOrd)!.push({ nm: item.nm, depth: item.depth });
-      }
-    }
-
-    // 맨 앞 비표준 항목 (표준항목 전에 나온 것들)
-    const leading = insertMap.get(-1) || [];
-    reordered.push(...leading);
-
-    // 표준 항목 + 후행 비표준 항목
-    for (const std of withStd) {
-      reordered.push({ nm: std.nm, depth: std.depth });
-      const trailing = insertMap.get(std.stdOrd) || [];
-      reordered.push(...trailing);
-    }
-
-    accountOrder.length = 0;
-    accountOrder.push(...reordered);
-  }
 
   // K-IFRS/K-GAAP 동시 누적 차단 — Stage 1 (fnlttSinglAcntAll) path 보강.
   // mergeAuditResults는 Stage 3 감사보고서에만 적용. 회사가 회계기준 전환했을 때
@@ -1166,28 +927,7 @@ function tryKeyAccounts(
       if (!seen.has(nm)) { seen.add(nm); order.push(nm); }
     }
 
-    // IS/CIS 항목이면 표준 순서로 재정렬
-    const isIS = sjFilter.includes("IS") || sjFilter.includes("CIS");
-    if (isIS && order.length > 0) {
-      const withStd: { nm: string; stdOrd: number }[] = [];
-      const insertMap = new Map<number, string[]>();
-      let lastStdOrd = -1;
-      for (const nm of order) {
-        const stdOrd = getIsStandardOrder(nm);
-        if (stdOrd >= 0) { withStd.push({ nm, stdOrd }); lastStdOrd = stdOrd; }
-        else { if (!insertMap.has(lastStdOrd)) insertMap.set(lastStdOrd, []); insertMap.get(lastStdOrd)!.push(nm); }
-      }
-      withStd.sort((a, b) => a.stdOrd - b.stdOrd);
-      const reordered: string[] = [...(insertMap.get(-1) || [])];
-      for (const std of withStd) { reordered.push(std.nm); reordered.push(...(insertMap.get(std.stdOrd) || [])); }
-      order.length = 0;
-      order.push(...reordered);
-    }
-
-    // BS 항목이면 섹션별 재정렬: 자산→자산총계→부채→부채총계→자본→자본총계
-    if (sjFilter.includes("BS") && order.length > 0) {
-      reorderBsAccounts(order);
-    }
+    // BS/IS 자체 재정렬 제거 — DART 원본 ord 순서 그대로 사용
 
     const rows: FinancialRow[] = [];
     for (const acct of order) {

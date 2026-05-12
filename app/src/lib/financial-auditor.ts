@@ -149,7 +149,7 @@ export function auditFinancialData(result: FinancialResult): AuditReport {
           category: "BS 분류 오류",
           account: item.account,
           message: `[${label}] "${item.account}"은 부채 항목인데 자산 영역에 배치됨`,
-          suggestion: "BS 정렬 로직(classifyBsSectionByName)에 해당 계정 추가 필요",
+          suggestion: "DART 원본 ord가 잘못된 케이스 — 업스트림 데이터 확인 필요",
         });
       }
       // 자본 키워드가 부채 영역에 있으면 경고
