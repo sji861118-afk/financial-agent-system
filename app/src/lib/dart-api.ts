@@ -401,7 +401,20 @@ function buildStatements(
   const yearData: Record<string, Record<string, string>> = {};
   const isIncomeStatement = sjFilter.some(s => s === "IS" || s === "CIS");
 
-  for (const reportYear of Object.keys(rawByYear).sort().reverse()) {
+  // 처리 순서: 사업보고서(연간) 우선, 그 다음 분기/반기 (priority 처리)
+  // - 분기 IS의 frmtrm_add_amount는 "직전 동기 누적"(3/6/9개월치)이라 사업의 연간 thstrm과 단위가 다름
+  // - "최신 보고서 우선" 원칙은 같은 reprtCode 그룹 내에서만 의미 (정정공시 반영)
+  // - 사업 2025 thstrm(7.9조) vs 2026 1Q frmtrm_add(1.79조) 혼용 사고 fix
+  const sortedReportYears = Object.keys(rawByYear).sort((a, b) => {
+    const reprtA = yearReprtMap?.[a] || "11011";
+    const reprtB = yearReprtMap?.[b] || "11011";
+    const isAnnualA = reprtA === "11011" ? 0 : 1;
+    const isAnnualB = reprtB === "11011" ? 0 : 1;
+    if (isAnnualA !== isAnnualB) return isAnnualA - isAnnualB;  // annual먼저
+    return parseInt(b) - parseInt(a);  // 같은 priority면 최신 연도 먼저 (정정공시)
+  });
+
+  for (const reportYear of sortedReportYears) {
     const raw = rawByYear[reportYear] || [];
     const items = raw.filter((it) => sjFilter.includes(it.sj_div));
     if (!items.length) continue;
