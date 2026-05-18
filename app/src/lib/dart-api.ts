@@ -853,20 +853,21 @@ function calcRatios(
       }
     }
 
-    // 이자비용 (EBITDA/이자비율용) — 우선순위:
+    // 이자비용 (EBITDA/이자비율용) — 우선순위 (롯데건설 검증보고 P0-2 반영):
     //  1) IS의 정확한 "이자비용" 행 (가장 정확, 발생주의)
-    //  2) CF의 실제 이자지급액 (현금주의 — IS에 별도 이자비용 행이 없을 때 fallback)
-    //  3) IS의 "금융비용/금융원가" — 통합 항목으로 외환손실/파생손실까지 포함되어 과대 위험.
-    //     이자보상배율을 비합리적으로 낮추는 주범 (예: 효성중공업 25년 0.86배 → 11.86배)
+    //  2) IS의 "금융비용/금융원가" — 회사 전체 차입 이자비용 통합값
+    //  3) CF의 실제 이자지급액 — 신종자본증권 이자(재무활동)만 부분 매핑되는 회사 있어 후순위
+    //     (롯데건설: CF 이자지급 5,075만 = 신종자본증권 이자, 실제 금융원가 43,725와 불일치)
+    //  *효성중공업 케이스(IS 금융비용에 외환손실 포함되어 과대평가)는 CF 영업활동 섹션 식별로 별도 후속.
     let interestExpense = Math.abs(getExact(isRows, ["이자비용", "이자비용(손실)"], year));
+    if (interestExpense === 0) {
+      interestExpense = Math.abs(get(isRows, ["금융비용", "금융원가"], year));
+    }
     if (interestExpense === 0 && cfRows.length > 0) {
       interestExpense = Math.abs(get(cfRows, ["이자지급", "이자의지급", "이자납부"], year));
     }
     if (interestExpense === 0) {
       interestExpense = Math.abs(get(isRows, ["이자비용"], year));
-    }
-    if (interestExpense === 0) {
-      interestExpense = Math.abs(get(isRows, ["금융비용", "금융원가"], year));
     }
 
     // EBITDA = 영업이익 + 감가상각비 + 무형자산상각비
@@ -896,9 +897,14 @@ function calcRatios(
     }
 
     // === 성장성: 매출증가율 (전년 대비) ===
-    const prevYear = String(parseInt(year) - 1);
-    if (revByYear[prevYear] !== undefined && revByYear[prevYear] !== 0 && rev !== 0) {
-      r["매출증가율"] = fmtPct(((rev - revByYear[prevYear]) / Math.abs(revByYear[prevYear])) * 100);
+    // 분기 연도(YYYY.MM)일 때 직전 연간 사업보고서와 단위 다른 비교라 산출 skip (P0-4 검증보고)
+    // → 후속(P1): frmtrm_add_amount 별도 보존하여 YoY 1Q vs 1Q 동기 비교 로직 추가 예정
+    const isQuarter = /\.\d{2}$/.test(year);
+    if (!isQuarter) {
+      const prevYear = String(parseInt(year) - 1);
+      if (revByYear[prevYear] !== undefined && revByYear[prevYear] !== 0 && rev !== 0) {
+        r["매출증가율"] = fmtPct(((rev - revByYear[prevYear]) / Math.abs(revByYear[prevYear])) * 100);
+      }
     }
 
     if (Object.keys(r).some((k) => r[k] !== "-")) ratios[year] = r;

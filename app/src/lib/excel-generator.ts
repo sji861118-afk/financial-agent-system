@@ -439,9 +439,15 @@ function getVsBenchmarkFill(
 function findStatementRow(items: StatementItem[] | undefined, aliases: string[]): StatementItem | undefined {
   if (!items?.length) return undefined;
   const normalized = aliases.map((a) => a.replace(/\s/g, ""));
+  // 1순위: exact match (롯데건설 매출액 alias "매출"이 "매출원가" 행에 substring 매칭되는 버그 fix)
+  for (const row of items) {
+    const acc = (row.account || "").replace(/\s/g, "");
+    if (normalized.some((a) => acc === a)) return row;
+  }
+  // 2순위: substring match — "영업이익" → "영업이익(손실)" 같은 suffix 변형 흡수용
   return items.find((row) => {
     const acc = (row.account || "").replace(/\s/g, "");
-    return normalized.some((a) => acc === a || acc.includes(a));
+    return normalized.some((a) => acc.includes(a));
   });
 }
 
@@ -623,7 +629,8 @@ function createDashboardSheet(wb: ExcelJS.Workbook, data: ExcelReportData): void
   const isItems = data.hasOfs && data.isItemsOfs?.length ? data.isItemsOfs : data.isItemsCfs;
   const cfItems = data.hasOfs && data.cfItemsOfs?.length ? data.cfItemsOfs : data.cfItemsCfs;
   const trendItems: Array<{ label: string; aliases: string[] }> = [
-    { label: "매출액", aliases: ["매출액", "매출", "수익(매출액)", "영업수익", "매출수익"] },
+    // "매출" 단독 alias 제거 — "매출원가" 행과 substring 매칭되는 버그 (롯데건설 검증보고 P0-1)
+    { label: "매출액", aliases: ["매출액", "수익(매출액)", "수익(매출)", "영업수익", "매출수익", "공사수익", "분양수익"] },
     { label: "영업이익", aliases: ["영업이익", "영업손실", "영업이익(손실)", "영업손익"] },
     { label: "당기순이익", aliases: ["당기순이익", "당기순손실", "당기순이익(손실)", "당기순손익", "연결당기순이익"] },
   ];
@@ -1473,12 +1480,13 @@ function createFinancialSheet(
       const rDeprIS = findRow("감가상각비", "감가상각비용");
       const rAmortIS = findRow("무형자산상각비", "무형자산감가상각비", "사용권자산상각비");
 
-      // 이자비용 셀 참조 빌더: IS "이자비용" > CF "이자지급/이자납부" > IS "금융비용"
-      // formula 문자열 형태로 반환 (예: `'7.현금흐름표(연결)'!B30` 또는 `B11`)
+      // 이자비용 셀 참조 빌더 (롯데건설 검증보고 P0-2 반영):
+      // 우선순위: IS "이자비용" > IS "금융비용/금융원가" > CF "이자지급/이자납부"
+      // (CF 이자지급은 신종자본증권 이자만 부분 매핑되는 회사 있어 후순위로 변경)
       function interestRef(c: string): string | null {
         if (rInterestExact) return `${c}${rInterestExact}`;
-        if (cfInterestPayRow) return `${cfRef}${c}${cfInterestPayRow}`;
         if (rFinCost) return `${c}${rFinCost}`;
+        if (cfInterestPayRow) return `${cfRef}${c}${cfInterestPayRow}`;
         return null;
       }
 
@@ -1521,6 +1529,11 @@ function createFinancialSheet(
         { name: "매출증가율", desc: "((당기-전기)/|전기|)×100", fmt: '0.0"%"',
           formula: (c, ci) => {
             if (ci === 0 || !rRevenue) return null;
+            // 분기 컬럼은 직전 annual과 단위 다른 비교라 skip (P0-4 — 검증보고)
+            const yr = years[ci];
+            const prevYr = years[ci - 1];
+            const isQuarter = /\.\d{2}$/.test(yr) || /\.\d{2}$/.test(prevYr);
+            if (isQuarter) return `="-"`;
             const pc = colLetter(ci - 1);
             return `=IF(${pc}${rRevenue}=0,"-",(${c}${rRevenue}-${pc}${rRevenue})/ABS(${pc}${rRevenue})*100)`;
           }},
@@ -1970,7 +1983,7 @@ function createAnalysisSheet(
   );
 
   row += 1;
-  ws.getCell(row, 1).value = "※ 분석 모델: NICE BizLine 기반 전문가 분석 엔진 v3.0 + Gemini 2.5 Pro / GPT-4o 병행 분석";
+  ws.getCell(row, 1).value = "※ 분석 엔진: 내부 재무분석 모델 (NICE BizLine 기반 산업 벤치마크 적용)";
   ws.getCell(row, 1).font = SOURCE_FONT;
 }
 
