@@ -444,12 +444,14 @@ function buildStatements(
         if (!nm || !amt) continue;
         // account_id를 unique key로 사용 (CJ대한통운 BS에서 "계약부채"/"리스부채"가
         // 유동/비유동 양쪽에 같은 nm으로 등장 → nm key 사용 시 후순위가 선순위를 덮어쓰는 버그).
-        // account_id가 없는 케이스(Stage 3 감사보고서 본문 등)는 nm fallback.
+        // 단, "-표준계정코드 미사용-" 같은 placeholder ID는 여러 다른 nm이 공유 → unique 보장 안 됨 → nm fallback
+        // (롯데건설 단기차입금/장기차입금/기타장기종업원급여 모두 placeholder ID 공유하는 버그 fix)
         const id = (it.account_id || "").trim();
-        const key = id || nm;
+        const isUniqueId = id && !id.startsWith("-") && !id.includes("미사용");
+        const key = isUniqueId ? id : nm;
         vals[key] = amt;
         // nm 보조 lookup (id-key와 다를 때만; 동명 중복은 첫 번째 값만 보존)
-        if (id && !(nm in vals)) vals[nm] = amt;
+        if (isUniqueId && !(nm in vals)) vals[nm] = amt;
         // 정규화 키도 저장 (연도간 계정명 변경 흡수: "영업이익(손실)"→"영업이익")
         const matchKey = normalizeForMatch(nm);
         if (matchKey !== nm && !(matchKey in vals)) vals[matchKey] = amt;
@@ -472,7 +474,8 @@ function buildStatements(
       if (isExcludedAccount(nm)) continue;
       if (!nm) continue;
       const id = (it.account_id || "").trim();
-      const key = id || nm;
+      const isUniqueId = id && !id.startsWith("-") && !id.includes("미사용");
+      const key = isUniqueId ? id : nm;
       if (!seen.has(key)) {
         seen.add(key);
         accountOrder.push({ nm, depth: detectAccountDepth(nm, sjFilter), key });
