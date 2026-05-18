@@ -47,7 +47,7 @@ const COMPANIES = [
   "효성중공업",
 ];
 
-const YEARS = ["2023", "2024", "2025"];
+const YEARS = ["2024", "2025", "2026"];
 const TOLERANCE = 0.05; // 5% 변동 시 경고
 const BASELINE_PATH = path.join(__dirname, "regression-baseline.json");
 

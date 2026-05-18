@@ -157,9 +157,10 @@ interface FinancialResult {
   }> | null;
 }
 
-// DART 재무제표는 보통 전년도까지만 공시됨 (2026년 기준 → 2024년까지)
-const latestAvailableYear = new Date().getFullYear() - 1; // 2025
-const yearOptions = Array.from({ length: 8 }, (_, i) => String(latestAvailableYear - i)); // 2025~2018
+// DART는 사업보고서를 다음 해 3월 공시 — 분기/반기보고서로 당해 연도까지 조회 가능
+// (사업보고서 미공시 시 fetchFinancialItems가 3Q→반기→1Q 순서로 자동 폴백)
+const latestAvailableYear = new Date().getFullYear(); // 당해 (예: 2026)
+const yearOptions = Array.from({ length: 8 }, (_, i) => String(latestAvailableYear - i)); // 2026~2019
 
 const LOADING_STEPS = [
   "기업 정보 확인 중...",

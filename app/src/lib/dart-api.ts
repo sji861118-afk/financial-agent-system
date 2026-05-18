@@ -82,7 +82,7 @@ async function fetchFinancialItems(
   fsDiv: string
 ): Promise<{ items: DartRawItem[]; reprtCode: string }> {
   const apiKey = getApiKey();
-  for (const reprt of ["11011", "11014", "11012"]) {
+  for (const reprt of ["11011", "11014", "11012", "11013"]) {
     const params = new URLSearchParams({
       crtfc_key: apiKey,
       corp_code: corpCode,
@@ -899,7 +899,7 @@ async function fetchKeyAccounts(
   year: string
 ): Promise<DartRawItem[]> {
   const apiKey = getApiKey();
-  for (const reprt of ["11011", "11014", "11012"]) {
+  for (const reprt of ["11011", "11014", "11012", "11013"]) {
     const params = new URLSearchParams({
       crtfc_key: apiKey,
       corp_code: corpCode,
@@ -3272,7 +3272,7 @@ export async function fetchRelatedCompanies(
 export async function fetchShareholders(corpCode: string, year: string): Promise<ShareholderInfo[]> {
   const apiKey = getApiKey();
   try {
-    for (const reprt of ['11011', '11014', '11012']) {
+    for (const reprt of ['11011', '11014', '11012', '11013']) {
       const params = new URLSearchParams({
         crtfc_key: apiKey,
         corp_code: corpCode,
