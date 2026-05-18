@@ -6,6 +6,9 @@ EBITDA D&A 보강, 이자비용 dual-source, Excel 셀 수식, 회계 감수 에
 
 ---
 
+## 2026-05-18
+- **총차입금 SUM 수식이 (유동)/(비유동) 분리 행을 캐치하도록 보강** — `excel-generator.ts` `findRow`에 suffix variant lookup 추가 + `findAllRows` 신규 + `borrowingKeywords`에 "차입금" 단독 키워드 추가. CJ대한통운 BS에서 dart-api.ts `disambiguateBsDuplicates`가 부여한 "차입금(유동)" / "차입금(비유동)" 두 행 모두 총차입금 SUM 수식에 포함되도록. 사용자 피드백 "재무비율은 항상 서식(수식)으로 표현"에 대응. 상세 root cause는 [CHANGELOG-DART.md 2026-05-18](./CHANGELOG-DART.md#2026-05-18) 참조. (commit 2bd7ae3)
+
 ## 2026-05-07
 - **재무비율 단위 접미사 손실 버그 ("배"/"회")**: Excel 1.대시보드 + 8.재무분석 시트에서 `parseFloat("1.6배")` → `1.6` → `numFmt: "#,##0"` 적용 시 정수 반올림 + 단위 사라짐 → "2"로 표시. 이자보상배율, EBITDA/이자비용, 총자산회전율, 매출채권회전율, 재고자산회전율 모두 영향. 해결: `parseRatioValueForExcel()` 헬퍼 — `endsWith("%")` → `0.0"%"`, `endsWith("배")` → `0.00"배"`, `endsWith("회")` → `0.00"회"` 분기. 숫자 fallback은 `#,##0.00`. text 값이 들어오면 그대로 string return (예외 케이스). **lesson: ExcelJS 셀 numFmt는 단위 접미사를 자동 보존 안 함 — string 파싱 단계에서 단위별 분기 필수.**
 - **vsBenchmark 필드와 riskLevel 필드 분리 명확화**: 8.재무분석 시트 평가 컬럼에 "양호/보통/주의" 대신 "높음/낮음/보통"이 표시되는 버그. `RatioDetail`에 두 필드 모두 존재 — `vsBenchmark` (벤치마크 대비, 색상 fill 대상) vs `riskLevel` (절대 위험 수준). 코드 review 시 `r.riskLevel`을 평가 컬럼에 사용하던 코드 발견 → `r.vsBenchmark`로 수정 + 함수명도 `ratioRiskFill` → `ratioVsBenchmarkFill`로 rename. **lesson: 비슷한 의미의 두 필드(벤치마크 대비 vs 절대 수준)는 함수명·셀이름·색상 매핑까지 일관되게 분리해야 review에서 잡힘.**

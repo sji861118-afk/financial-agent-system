@@ -201,6 +201,14 @@
 - **다중 회사 일반화 검증**: 삼성전자(EBITDA 61.6조)·카카오(40.3조)·셀트리온(15.5조)·현대건설(0.39조)·효성중공업(0.5조 with 보강) 모두 정상. CF 원본에 D&A 있는 회사는 보강 skip, 효성중공업처럼 누락된 회사만 사업보고서 보강 path 발동
 - 효성중공업 검증 (개별 25년): EBITDA 442,378→**498,500** (영업이익+통합 56,122), 이자보상배율 **11.9배**
 
+### 완료 (2026-05-18) — BS 동명이항목 분리 + 총차입금 SUM 수식 fix (사용자 피드백 2건)
+- **[007622c] CJ대한통운 연결 BS 유동/비유동 항목 섞임 fix** — DART CFS BS에서 "계약부채/리스부채/차입금"이 유동(ord=43, ifrs-full_CurrentContractLiabilities)과 비유동(ord=55, ifrs-full_NoncurrentContractLiabilities) 양쪽에 같은 `account_nm`·다른 `account_id`로 등장. `buildStatements`의 `seen.has(nm)` + `vals[nm]=amt`가 silent data loss 유발 (유동 위치에 비유동 금액이 들어가고 비유동 행 누락). 해결: `accountOrder` 항목에 `key = id || nm` 필드 + `yearData[year]` id-keyed primary + nm fallback. `disambiguateBsDuplicates()` 신규 — 같은 nm이 2번 이상 등장 시 직전 depth=1 헤더 추적해 "(유동)/(비유동)" suffix. `normalizeAcct`가 suffix 자동 strip → calcRatios 매칭 영향 없음. CJ 검증: BS 등식 100% 일치, 8건 disambiguation.
+- **[2bd7ae3] excel-generator 총차입금 SUM 수식 누락 fix** — `acctRowMap`이 `replace(/[\s()]/g, "")`로 정규화하여 "리스부채(유동)" → "리스부채유동" 키 저장. `findRow("리스부채")` 매칭 실패 → borrowRows 비어 → SUM formula null → raw 숫자 fallback (수식 바 비어 보임). 사용자 피드백 "재무비율은 항상 서식으로 표현". 해결: `findRow`에 suffix variant lookup, `findAllRows` 신규 (multi-row SUM용), `borrowingKeywords`에 "차입금" 단독 추가. 다른 회사 회귀 없음 (suffix 없는 행은 norm 직접 매칭).
+- **남청라 (디디아이남청라로지스틱스REIT) 총차입금 미표시 피드백** — 검증 결과 commit 63c5133(2026-04-16 비상장 외감법인 Stage 1/2 스킵 로직 수정) 이후 **이미 해결**됨. 로컬 buildFinancialData 검증: Stage 3 (감사보고서 ZIP) 작동, 장기차입금 690억·부채비율 152.1% 정상 추출. **추가 코드 변경 불필요**.
+- **진단 방법론 진화**: 임시 `/api/dart/diag-*` endpoint 배포→curl→제거 cycle 대신 MCP `find_company` + `get_full_financial_statement`로 대화 내 raw 조회 + tsx로 buildFinancialData 직접 호출 (JWT_SECRET 우회). 1 deploy cycle 절약.
+- **재사용 가능 진단 스크립트 3개 추가**: `app/scripts/diag-cj-daehan.mts`, `diag-namchungra-local.mts`, `diag-baseline-local.mts` — JWT 없이 production 코드 path 검증.
+- **신규 메모리**: `~/.claude/projects/<ws>/memory/project_bs_classification.md` — `classifyBsSectionByName`/`reorderBsAccounts`/`getBsSortRank` 함수 deprecated 명시 + 현재 BS 분류 chain (detectAccountDepth → refineDepthBySumDetection → disambiguateBsDuplicates) 문서화.
+
 ### 미확인/잠재 이슈
 - PDF 업로드 IS 파싱이 Vercel에서 실제 작동하는지 최종 확인 필요 (pdf-parse fallback 줄 재구성)
 - 파일 제거 시 파싱 결과 유지 로직 (남은 파일의 데이터가 정확한지)
@@ -212,7 +220,7 @@
 - **여신검토 E2E 테스트 미수행**: 실데이터로 접수→의견→상태전환 전체 흐름 검증 필요
 - review-store.ts Firestore init 중복 (firebase-admin.ts와 별도 초기화 → 공유 함수 추출 리팩토링 필요)
 - upload-and-generate DART 연동이 Vercel maxDuration(60초) 내에 완료되는지 실배포 확인 필요
-- **DOCX 총차입금 계산 오류**: BS분석에서 차입금 76,456만 표시 (유동성장기차입금 273,135 + 사채 미포함)
+- **DOCX 총차입금 계산 오류**: BS분석에서 차입금 76,456만 표시 (유동성장기차입금 273,135 + 사채 미포함) — *(2026-05-18 excel-generator는 borrowingKeywords 보강 + suffix variant lookup으로 해결; DOCX side (obligor.ts 등)는 별도 점검 필요)*
 - **DOCX opinion 텍스트 HTML 엔티티**: &amp;quot; &amp;apos; 등 PDF 텍스트의 특수문자 이스케이프 처리 필요
 
 ### 완료 (2026-04-28) — DART 추출 정확도 보강 8 commit
@@ -239,7 +247,12 @@
 9. **[High] 표 서식 최종 정리**: BS/IS/CF 시트에서 빈 셀 테두리 누락, 비율행 아래 이탈 항목(R51-56 등) 정리 필요
 10. **[High] 회계 감수 에이전트 UI 표시**: 현재 API 응답에만 포함 → 프론트엔드에 검증 결과 표시 (경고 배지, 상세 팝업)
 11. **[High] 증감사유 주석 매칭 품질 개선**: 키워드 매칭 정확도 향상, 관련 없는 주석 필터링, 주석 본문 중 증감 관련 테이블 데이터 추출
-12. **[Medium] fetchBorrowingNotes/fetchAuditOpinion 복원**: 현재 스킵 → 타임아웃 안전하게 재통합 (총차입금 셀수식 SUM에 빠진 항목 보완)
+12. **[Medium] fetchBorrowingNotes/fetchAuditOpinion 복원**: 현재 스킵 → 타임아웃 안전하게 재통합 (총차입금 셀수식 SUM에 빠진 항목 보완 — 2026-05-18 acctRowMap suffix variant lookup으로 (유동)/(비유동) 분리 차입금도 SUM에 잡힘. 주석 자체 복원만 남음)
+18. **[High] 사용자 측 UI 일괄 시각 검증** (2026-05-18 fix 후): CJ대한통운 + 남청라 + 프로젠 + 셀리드 + 제넥신 5건. CJ는 Excel 5번시트 총차입금 수식 바에 SUM 표시 확인 + BS 시트 "계약부채(유동)/(비유동)" 별개 행 표시 확인
+19. **[Medium] disambiguateBsDuplicates 일반화 검증**: CJ대한통운 외 다른 연결 CFS 보고서에서 false positive 모니터링. 자본 섹션·기타 헤더에서 "(유동)/(비유동)" 잘못 부여되는 케이스 없는지
+20. **[Medium] acctRowMap 괄호 normalize 정책 재검토**: 다른 suffix 계정 ("(유동성)", "(단기)", "(장기)" 등)에서도 동일 silent matching 손실 가능. excel-generator 전체 점검
+21. **[Medium] 남청라 반기 audit "전기" 라벨 mislabeling**: REIT 반기 audit의 "전기"(=2024.06)가 우리 코드에서 2023 키로 매핑되는 별개 이슈. fetchAuditReportData의 targetYear-1 추정 로직 점검
+22. **[High] 9사 회귀 baseline.json 재생성**: 이번 세션 CJ fix + 효성중공업 사업보고서 갱신으로 baseline stale. production JWT 필요 OR 신규 `regression-check.mjs --local` 모드 활용
 13. **[Medium] DOCX 버그 수정**: 총차입금 계산(유동성장기차입금+사채 포함), HTML 엔티티 제거
 14. **[Medium] 광명9R 여신승인신청서 완성**: 금리/수수료/대주단 확정 시 공란 채우기
 15. **[Medium] 피드백 확인 루프**: ok-cf1.vercel.app/feedback 에서 신규 피드백 확인 → 수정 → 배포

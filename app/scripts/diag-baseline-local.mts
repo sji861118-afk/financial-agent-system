@@ -7,12 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const dartApi: any = await import("../src/lib/dart-api.ts");
-const buildFinancialData = dartApi.buildFinancialData || dartApi.default?.buildFinancialData;
-if (!buildFinancialData) {
-  console.error("buildFinancialData export 없음. Available:", Object.keys(dartApi), Object.keys(dartApi.default || {}));
-  process.exit(1);
-}
+import { buildFinancialData } from "./lib/diag-bootstrap.mts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = path.join(__dirname, "regression-baseline.json");
@@ -24,7 +19,7 @@ const COMPANIES_CORP = {
   "카카오": "00258801",
   "셀트리온": "00421045",
   "NAVER": "00266961",
-  "현대건설": "00164742", // 임시 — 실제로는 다를 수 있음
+  "현대건설": "00164742",
   "대우건설": "00146772",
   "효성중공업": "01515323",
 };
@@ -45,7 +40,6 @@ function parseRatio(s: string | null): number | null {
 const TOLERANCE = 0.05;
 let warnings = 0, errors = 0;
 
-// Full 9사 + CJ대한통운 (BS fix 검증 추가)
 const TEST_LIST = ["삼성전자", "LG화학", "SK하이닉스", "카카오", "셀트리온", "NAVER"];
 
 for (const corp of TEST_LIST) {

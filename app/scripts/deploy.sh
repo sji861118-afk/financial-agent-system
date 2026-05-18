@@ -81,7 +81,7 @@ if command -v rsync >/dev/null 2>&1; then
   # vercel.json은 src/ 외부에 있어 src 동기화에 포함 안 됨 → 별도 복사 (region 설정 등)
   if [[ -f "$APP_DIR/vercel.json" ]]; then
     cp "$APP_DIR/vercel.json" "$DEPLOY_DIR/vercel.json"
-    echo "  ✓ vercel.json 복사: $(cat $APP_DIR/vercel.json | tr -d '\n' | head -c 80)"
+    echo "  ✓ vercel.json 복사: $(cat "$APP_DIR/vercel.json" | tr -d '\n' | head -c 80)"
   fi
 else
   # Windows Git Bash fallback — rsync 미제공 시 robocopy /MIR 사용.
@@ -97,7 +97,7 @@ else
   # vercel.json 별도 복사 (robocopy 분기에서도 동일)
   if [[ -f "$APP_DIR/vercel.json" ]]; then
     cp "$APP_DIR/vercel.json" "$DEPLOY_DIR/vercel.json"
-    echo "  ✓ vercel.json 복사: $(cat $APP_DIR/vercel.json | tr -d '\n' | head -c 80)"
+    echo "  ✓ vercel.json 복사: $(cat "$APP_DIR/vercel.json" | tr -d '\n' | head -c 80)"
   fi
 fi
 
