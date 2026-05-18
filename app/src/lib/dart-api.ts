@@ -583,7 +583,8 @@ function calcRatios(
   bsRows: FinancialRow[],
   isRows: FinancialRow[],
   years: string[],
-  cfRows: FinancialRow[] = []
+  cfRows: FinancialRow[] = [],
+  yearReprtMap?: Record<string, string>  // 분기/사업 구분용 (매출증가율 skip 판정)
 ): Record<string, Record<string, string>> {
   // 정확 매칭 우선, 부분 매칭 fallback
   function get(rows: FinancialRow[], keywords: string[], year: string): number {
@@ -897,9 +898,11 @@ function calcRatios(
     }
 
     // === 성장성: 매출증가율 (전년 대비) ===
-    // 분기 연도(YYYY.MM)일 때 직전 연간 사업보고서와 단위 다른 비교라 산출 skip (P0-4 검증보고)
+    // 분기 연도(YYYY.MM suffix 또는 yearReprtMap이 11011 외)일 때 직전 연간 사업보고서와
+    // 단위 다른 비교라 산출 skip (P0-4 검증보고)
     // → 후속(P1): frmtrm_add_amount 별도 보존하여 YoY 1Q vs 1Q 동기 비교 로직 추가 예정
-    const isQuarter = /\.\d{2}$/.test(year);
+    const reprtCode = yearReprtMap?.[year];
+    const isQuarter = /\.\d{2}$/.test(year) || (reprtCode != null && reprtCode !== "11011");
     if (!isQuarter) {
       const prevYear = String(parseInt(year) - 1);
       if (revByYear[prevYear] !== undefined && revByYear[prevYear] !== 0 && rev !== 0) {
@@ -2162,7 +2165,8 @@ function processRawStatements(
   // 현금흐름표(CF) 데이터 추출 — EBITDA 산출용 감가상각비/무형자산상각비 소스
   const hasCF = Object.values(allRaw).some((items) => items.some((it) => it.sj_div === "CF"));
   const cfRows = hasCF ? buildStatements(allRaw, years, ["CF"], yearReprtMap) : [];
-  const ratios = calcRatios(bsRows, isRows, years, cfRows);
+  // yearReprtMap 전달 — calcRatios가 분기/사업 구분으로 매출증가율 등 skip 가능 (P0-4)
+  const ratios = calcRatios(bsRows, isRows, years, cfRows, yearReprtMap);
   return { bsRows, isRows, cfRows, ratios };
 }
 
