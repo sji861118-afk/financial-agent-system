@@ -144,6 +144,9 @@ function extractNoteRef(s: string): string | undefined {
 
 function normalizeAcct(s: string): string {
   let n = s.replace(/\s/g, "");
+  // BS 동명이항목 disambiguation suffix 제거: "리스부채(유동)" → "리스부채"
+  // (buildStatements가 같은 account_nm을 유동/비유동 양쪽에서 별개 행으로 표시하기 위해 붙인 suffix)
+  n = n.replace(/\(유동\)$|\(비유동\)$/g, "");
   // 로마숫자/숫자 접두사 제거: Ⅰ.유동자산 → 유동자산
   n = n.replace(/^[IⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩivxlcdm\d]+[.·\s]+/, "");
   // (숫자) 접두사 제거: (1)당좌자산 → 당좌자산
@@ -438,19 +441,26 @@ function buildStatements(
           const fallbackField = field.replace("_add_amount", "_amount");
           amt = (it as unknown as Record<string, string>)[fallbackField] || "";
         }
-        if (nm && amt) {
-          vals[nm] = amt;
-          // 정규화 키도 저장 (연도간 계정명 변경 흡수: "영업이익(손실)"→"영업이익")
-          const matchKey = normalizeForMatch(nm);
-          if (matchKey !== nm && !vals[matchKey]) vals[matchKey] = amt;
-        }
+        if (!nm || !amt) continue;
+        // account_id를 unique key로 사용 (CJ대한통운 BS에서 "계약부채"/"리스부채"가
+        // 유동/비유동 양쪽에 같은 nm으로 등장 → nm key 사용 시 후순위가 선순위를 덮어쓰는 버그).
+        // account_id가 없는 케이스(Stage 3 감사보고서 본문 등)는 nm fallback.
+        const id = (it.account_id || "").trim();
+        const key = id || nm;
+        vals[key] = amt;
+        // nm 보조 lookup (id-key와 다를 때만; 동명 중복은 첫 번째 값만 보존)
+        if (id && !(nm in vals)) vals[nm] = amt;
+        // 정규화 키도 저장 (연도간 계정명 변경 흡수: "영업이익(손실)"→"영업이익")
+        const matchKey = normalizeForMatch(nm);
+        if (matchKey !== nm && !(matchKey in vals)) vals[matchKey] = amt;
       }
       if (Object.keys(vals).length) yearData[dataYear] = vals;
     }
   }
 
   // 계정 순서 + depth 추론 — DART ord 순서 그대로 보존 (최신 보고서 우선)
-  const accountOrder: { nm: string; depth: number }[] = [];
+  // unique key = account_id || nm (CJ대한통운 BS 동명이항목 처리)
+  const accountOrder: { nm: string; depth: number; key: string }[] = [];
   const seen = new Set<string>();
   for (const reportYear of Object.keys(rawByYear).sort().reverse()) {
     const raw = rawByYear[reportYear] || [];
@@ -460,9 +470,12 @@ function buildStatements(
     for (const it of items) {
       const nm = it.account_nm.trim();
       if (isExcludedAccount(nm)) continue;
-      if (nm && !seen.has(nm)) {
-        seen.add(nm);
-        accountOrder.push({ nm, depth: detectAccountDepth(nm, sjFilter) });
+      if (!nm) continue;
+      const id = (it.account_id || "").trim();
+      const key = id || nm;
+      if (!seen.has(key)) {
+        seen.add(key);
+        accountOrder.push({ nm, depth: detectAccountDepth(nm, sjFilter), key });
       }
     }
     if (accountOrder.length) break;
@@ -501,20 +514,53 @@ function buildStatements(
   refineDepthBySumDetection(accountOrder, yearData, displayYears);
 
   const rows: FinancialRow[] = [];
-  for (const { nm: acct, depth } of accountOrder) {
+  for (const { nm: acct, depth, key } of accountOrder) {
     const row: FinancialRow = { account: acct, depth };
     const matchKey = normalizeForMatch(acct);
     for (const year of displayYears) {
       const vals = yearData[year] || {};
-      // 원본 키 → 정규화 키 fallback (연도간 계정명 변경 흡수)
-      const amt = vals[acct] || vals[matchKey];
+      // id-keyed primary → nm fallback → 정규화 키 fallback (연도간 계정명 변경 흡수)
+      const amt = vals[key] || vals[acct] || vals[matchKey];
       row[year] = amt ? toMillions(amt) : "-";
     }
     if (displayYears.some((y) => row[y] !== "-")) {
       rows.push(row);
     }
   }
+  // BS 동명이항목 disambiguation (CJ대한통운 계약부채/리스부채 등):
+  // 같은 account_nm이 유동/비유동 양쪽에 등장 시 섹션 suffix로 구분
+  if (isBS) disambiguateBsDuplicates(rows);
   return rows;
+}
+
+/**
+ * BS에서 같은 account_nm이 유동/비유동 양쪽에 나오는 경우 섹션 suffix로 구분.
+ * 가장 최근 depth=1 헤더("유동부채"/"비유동부채"/"유동자산"/"비유동자산")를 추적해서
+ * 중복 nm 행에 "(유동)"/"(비유동)" 접미사 부여.
+ */
+function disambiguateBsDuplicates(rows: FinancialRow[]): void {
+  // 1) 중복 nm 카운트
+  const nameCount = new Map<string, number>();
+  for (const r of rows) nameCount.set(r.account, (nameCount.get(r.account) || 0) + 1);
+  const hasDup = [...nameCount.values()].some((c) => c >= 2);
+  if (!hasDup) return;
+  // 2) 섹션 추적 + 중복 행만 suffix 부여
+  //    - depth=0/1에서 명시적 섹션 헤더(유동자산/비유동자산/유동부채/비유동부채) 매칭 시 update
+  //    - 자본 섹션 진입(자본총계 등) 시 section=null
+  //    - 그 외 depth=1 항목(예: "당기손익-공정가치측정금융자산"이 DEPTH1_KEYWORDS에 포함)은 keep section
+  let section: "유동" | "비유동" | null = null;
+  for (const r of rows) {
+    const n = r.account.replace(/\s/g, "");
+    if (n === "유동자산" || n === "유동부채" || n === "당좌자산") section = "유동";
+    else if (n === "비유동자산" || n === "비유동부채" || n === "고정자산" || n === "고정부채" || n === "투자자산") section = "비유동";
+    else if (/^(자본|자본총계|자본금|자본잉여금|이익잉여금|결손금|기타포괄손익|지배기업|비지배지분|소수주주|매각예정자산|매각예정부채|부채와자본총계|부채및자본총계)/.test(n)) {
+      section = null; // 자본/매각예정/통합 헤더 진입 시 reset
+    }
+    // 그 외 (depth=1 sub-categorical accounts, 부채총계 등) → keep current section
+    if ((nameCount.get(r.account) || 0) >= 2 && section) {
+      r.account = `${r.account}(${section})`;
+    }
+  }
 }
 
 function calcRatios(
