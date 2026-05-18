@@ -2177,7 +2177,7 @@ function isStage1Healthy(
     return { missingYears: missing };
   }
 
-  const revRow = findRow(is, /^(매출액|영업수익|매출|보험수익|보험료수익|순영업수익|공사수익|분양수익|도급수익)$/);
+  const revRow = findRow(is, /^(매출액|영업수익|매출|보험수익|보험료수익|순영업수익|공사수익|분양수익|도급수익|수익\(매출액\)|수익\(매출\)|매출수익)$/);
   const assetRow = findRow(bs, /^자산총계$/);
   const liabRow = findRow(bs, /^부채총계$/);
   const equityRow = findRow(bs, /^자본총계$/);
@@ -2398,9 +2398,11 @@ async function _buildFinancialDataImpl(
       console.log(`[DART] Stage 1.5 진입 — 사업보고서 본문 폴백 시도 (ofsUnhealthy=${ofsUnhealthy}, cfsUnhealthy=${cfsUnhealthy})`);
       const annual = await extractAnnualReportStatements(corpCode, years);
 
-      // 사업보고서 본문 데이터는 plain year 키 ("2024") 사용 → result.years 도 plain으로 재설정
-      // (Stage 1 분기 displayYears "2024.09"와 충돌하므로 통일)
-      const wantsAnnualYearsLabel = ofsUnhealthy && annual.ofs || cfsUnhealthy && annual.cfs;
+      // 사업보고서 본문 데이터는 plain year 키 ("2024") 사용 → result.years도 plain으로 재설정
+      // 단, CFS Stage 1이 살아남고 quarterly suffix("2026.03")를 가지면 그 displayYears 보존
+      // (OFS만 Stage 1.5 폴백되어도 CFS의 분기 컬럼은 정상 표시되어야 함 — 롯데건설 케이스)
+      const cfsKeptStage1WithQuarterly = !cfsUnhealthy && result.hasCfs && result.years.some(y => /\.\d{2}$/.test(y));
+      const wantsAnnualYearsLabel = (ofsUnhealthy && annual.ofs || cfsUnhealthy && annual.cfs) && !cfsKeptStage1WithQuarterly;
       if (wantsAnnualYearsLabel) {
         result.years = [...years];
       }
