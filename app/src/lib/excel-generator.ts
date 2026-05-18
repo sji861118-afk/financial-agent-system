@@ -1261,8 +1261,29 @@ function createFinancialSheet(
         const norm = name.replace(/[\s()]/g, "");
         const r = acctRowMap.get(norm);
         if (r) return r;
+        // dart-api.ts disambiguateBsDuplicates가 "(유동)/(비유동)" suffix를 붙인 경우 대응.
+        // acctRowMap key는 괄호 제거 normalized이므로 "리스부채(유동)" → "리스부채유동"으로 저장됨.
+        const ry = acctRowMap.get(norm + "유동");
+        if (ry) return ry;
+        const rn = acctRowMap.get(norm + "비유동");
+        if (rn) return rn;
       }
       return null;
+    }
+    // 같은 키워드로 매칭되는 모든 행 수집 (총차입금 SUM 등 multi-row 수식용).
+    // dart-api.ts disambiguation으로 "차입금(유동)/(비유동)" 처럼 분리된 행을 모두 캐치.
+    function findAllRows(...names: string[]): number[] {
+      const found = new Set<number>();
+      for (const name of names) {
+        const norm = name.replace(/[\s()]/g, "");
+        const r = acctRowMap.get(norm);
+        if (r) found.add(r);
+        const ry = acctRowMap.get(norm + "유동");
+        if (ry) found.add(ry);
+        const rn = acctRowMap.get(norm + "비유동");
+        if (rn) found.add(rn);
+      }
+      return [...found].sort((a, b) => a - b);
     }
     // 엑셀 컬럼 문자 (B=2, C=3, ...)
     function colLetter(ci: number): string {
@@ -1315,16 +1336,19 @@ function createFinancialSheet(
       const rCash = findRow("현금및현금성자산", "현금및예치금", "현금");
       const rCurAsset = findRow("유동자산");
       const rCurLiab = findRow("유동부채");
-      // 차입금 관련 행 수집 (SUM 수식용)
-      const borrowingKeywords = ["단기차입금", "장기차입금", "유동성장기부채", "유동성장기차입금",
+      // 차입금 관련 행 수집 (SUM 수식용). dart-api.ts disambiguateBsDuplicates로
+      // "차입금(유동)/(비유동)" 분리된 행도 모두 캐치하기 위해 findAllRows 사용.
+      // "차입금" 단독 키워드 추가 — CJ대한통운 등 "단기/장기차입금" 구분 없이 "차입금"만 등재하는 회사 대응.
+      const borrowingKeywords = ["단기차입금", "장기차입금", "차입금",
+        "유동성장기부채", "유동성장기차입금",
         "사채", "전환사채", "교환사채", "단기사채", "유동성사채",
         "유동리스부채", "비유동리스부채", "리스부채", "차입부채",
         "유동금융부채", "비유동금융부채"];
-      const borrowRows: number[] = [];
+      const borrowRowSet = new Set<number>();
       for (const kw of borrowingKeywords) {
-        const r = findRow(kw);
-        if (r) borrowRows.push(r);
+        for (const r of findAllRows(kw)) borrowRowSet.add(r);
       }
+      const borrowRows = [...borrowRowSet].sort((a, b) => a - b);
 
       // 총차입금 행 번호 (순차입금, 차입금의존도에서 참조)
       let totalBorrRow = 0;
