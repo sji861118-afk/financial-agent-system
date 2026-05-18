@@ -1144,6 +1144,17 @@ function createFinancialSheet(
     applyHeaderStyle(ws, row, 1, totalCols);
     row += 1;
 
+    // 전년비 증감 컬럼은 분기 데이터가 있어도 항상 직전 두 "연도(annual)" 비교 기준으로 계산
+    // (예: years=['2024','2025','2026.03'] → 증감 = 2025 vs 2024, 2026.03 분기는 단순 표시만)
+    const annualYearIndexes: number[] = [];
+    for (let i = 0; i < years.length; i++) {
+      if (!/\.\d{2}$/.test(years[i])) annualYearIndexes.push(i);
+    }
+    const yoyCurrIdx = annualYearIndexes.length >= 2 ? annualYearIndexes[annualYearIndexes.length - 1] : -1;
+    const yoyPrevIdx = annualYearIndexes.length >= 2 ? annualYearIndexes[annualYearIndexes.length - 2] : -1;
+    const yoyCurrCol = yoyCurrIdx >= 0 ? String.fromCharCode(65 + yoyCurrIdx + 1) : null; // 0→B, 1→C
+    const yoyPrevCol = yoyPrevIdx >= 0 ? String.fromCharCode(65 + yoyPrevIdx + 1) : null;
+
     // Freeze panes below header
     ws.views = [{ state: "frozen", ySplit: row - 1, xSplit: 0 }];
 
@@ -1203,48 +1214,42 @@ function createFinancialSheet(
           cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF0F0F0" } };
         }
 
-        // YoY change for last year — 증감액 + 증감률 두 컬럼
-        if (ci === years.length - 1 && prevVal !== undefined) {
-          const currNum = parseFloat(String(valStr).replace(/,/g, "").trim());
-          const prevNum = parseFloat(String(prevVal).replace(/,/g, "").trim());
-          if (!isNaN(currNum) && !isNaN(prevNum)) {
-            // 증감액 (절대 금액)
-            const diff = currNum - prevNum;
-            const diffCell = ws.getCell(row, years.length + 2);
-            diffCell.value = diff;
-            diffCell.numFmt = "#,##0";
-            diffCell.font = NORMAL_FONT;
-            diffCell.alignment = RIGHT_ALIGN;
-            diffCell.border = THIN_BORDER;
+        prevVal = String(valStr);
+      }
 
-            // 증감률 (%)
-            if (prevNum !== 0) {
-              const pctChange = ((currNum - prevNum) / Math.abs(prevNum)) * 100;
-              const pctCell = ws.getCell(row, years.length + 3);
-              pctCell.value = pctChange / 100;
-              pctCell.numFmt = "0.0%";
-              pctCell.font = NORMAL_FONT;
-              pctCell.alignment = RIGHT_ALIGN;
-              pctCell.border = THIN_BORDER;
-            }
+      // 전년비 증감액/증감률 — 분기와 무관하게 항상 직전 두 annual 연도 셀 참조 (Excel formula로)
+      // (사용자 요청: 26.1분기 추출되어도 증감은 25년 12월말 vs 24년 12월말 기준)
+      if (yoyCurrCol && yoyPrevCol) {
+        // 증감액 = 당기연도 - 전기연도 (IFERROR로 텍스트 셀 방지)
+        const diffCell = ws.getCell(row, years.length + 2);
+        diffCell.value = { formula: `=IFERROR(${yoyCurrCol}${row}*1,0)-IFERROR(${yoyPrevCol}${row}*1,0)` } as any;
+        diffCell.numFmt = "#,##0";
+        diffCell.font = NORMAL_FONT;
+        diffCell.alignment = RIGHT_ALIGN;
+        diffCell.border = THIN_BORDER;
 
-            // 증감사유 간략 참조 (상세는 별도 시트)
-            if (hasYoyAnalysis && data.yoyAnalysis) {
-              const targetType = stmtType === "BS" ? "BS" : "IS";
-              const yoyItem = data.yoyAnalysis.find(
-                (y) => y.account === rawAcct && y.stmtType === targetType
-              );
-              if (yoyItem && yoyItem.briefRef) {
-                const noteCell = ws.getCell(row, years.length + 4);
-                noteCell.value = yoyItem.briefRef;
-                noteCell.font = { name: FONT_NAME, size: 9, color: { argb: "FF4472C4" } };
-                noteCell.alignment = { vertical: "middle" };
-                noteCell.border = THIN_BORDER;
-              }
-            }
+        // 증감률 = (당기-전기)/|전기| (전기=0 또는 텍스트면 "-")
+        const pctCell = ws.getCell(row, years.length + 3);
+        pctCell.value = { formula: `=IFERROR(IF(${yoyPrevCol}${row}*1=0,"-",(${yoyCurrCol}${row}*1-${yoyPrevCol}${row}*1)/ABS(${yoyPrevCol}${row}*1)),"-")` } as any;
+        pctCell.numFmt = "0.0%";
+        pctCell.font = NORMAL_FONT;
+        pctCell.alignment = RIGHT_ALIGN;
+        pctCell.border = THIN_BORDER;
+
+        // 증감사유 간략 참조 (상세는 별도 시트)
+        if (hasYoyAnalysis && data.yoyAnalysis) {
+          const targetType = stmtType === "BS" ? "BS" : "IS";
+          const yoyItem = data.yoyAnalysis.find(
+            (y) => y.account === rawAcct && y.stmtType === targetType
+          );
+          if (yoyItem && yoyItem.briefRef) {
+            const noteCell = ws.getCell(row, years.length + 4);
+            noteCell.value = yoyItem.briefRef;
+            noteCell.font = { name: FONT_NAME, size: 9, color: { argb: "FF4472C4" } };
+            noteCell.alignment = { vertical: "middle" };
+            noteCell.border = THIN_BORDER;
           }
         }
-        prevVal = String(valStr);
       }
       // 계정명 → 행번호 매핑 (수식 참조용)
       const acctNorm = acct.replace(/[\s()]/g, "");
@@ -1285,6 +1290,17 @@ function createFinancialSheet(
       }
       return [...found].sort((a, b) => a - b);
     }
+    // 키워드를 포함하는 모든 행 (substring 매칭). 합성 계정명 대응:
+    // "차입금" → "단기차입금 및 유동성 장기부채" (롯데건설), "장기차입금 및 사채" 같이
+    // 단순 exact 매칭으로 못 잡는 행도 SUM 수식에 포함시킴.
+    function findAllRowsContaining(...keywords: string[]): number[] {
+      const found = new Set<number>();
+      const normKws = keywords.map(k => k.replace(/[\s()]/g, ""));
+      for (const [normAcct, rowNum] of acctRowMap.entries()) {
+        if (normKws.some(kw => kw && normAcct.includes(kw))) found.add(rowNum);
+      }
+      return [...found].sort((a, b) => a - b);
+    }
     // 엑셀 컬럼 문자 (B=2, C=3, ...)
     function colLetter(ci: number): string {
       return String.fromCharCode(65 + ci + 1); // 0→B, 1→C, ...
@@ -1305,14 +1321,24 @@ function createFinancialSheet(
           const col = colLetter(ci);
           const formula = cfg.formula(col, ci);
 
+          // 사용자 요청: 총차입금/순차입금 등 하단 재무비율은 항상 수식(formula)으로 표시
+          // formula 생성 실패 시에도 API 계산값을 상수 수식(`=숫자`)으로 wrap → 셀 클릭 시 확인 가능
           if (formula) {
             cell.value = { formula } as any;
           } else {
             const yrRatios = ratios?.[yr] ?? {};
-            const val = yrRatios[cfg.name] ?? "-";
-            const valStr = String(val);
-            const n = parseFloat(valStr.replace(/%|배|,/g, ""));
-            cell.value = !isNaN(n) ? n : val;
+            const val = yrRatios[cfg.name];
+            if (val !== undefined && val !== null && val !== "-") {
+              const valStr = String(val);
+              const n = parseFloat(valStr.replace(/%|배|,/g, ""));
+              if (!isNaN(n)) {
+                cell.value = { formula: `=${n}` } as any;
+              } else {
+                cell.value = { formula: `="${valStr.replace(/"/g, '""')}"` } as any;
+              }
+            } else {
+              cell.value = { formula: `="-"` } as any;
+            }
           }
           cell.numFmt = cfg.fmt;
           cell.font = NORMAL_FONT;
@@ -1344,10 +1370,8 @@ function createFinancialSheet(
         "사채", "전환사채", "교환사채", "단기사채", "유동성사채",
         "유동리스부채", "비유동리스부채", "리스부채", "차입부채",
         "유동금융부채", "비유동금융부채"];
-      const borrowRowSet = new Set<number>();
-      for (const kw of borrowingKeywords) {
-        for (const r of findAllRows(kw)) borrowRowSet.add(r);
-      }
+      // substring 매칭으로 합성 계정명도 캐치 (롯데건설 "단기차입금 및 유동성 장기부채" 등)
+      const borrowRowSet = new Set<number>(findAllRowsContaining(...borrowingKeywords));
       const borrowRows = [...borrowRowSet].sort((a, b) => a - b);
 
       // 총차입금 행 번호 (순차입금, 차입금의존도에서 참조)
