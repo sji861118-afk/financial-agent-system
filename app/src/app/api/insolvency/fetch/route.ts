@@ -95,6 +95,15 @@ export async function POST(request: NextRequest) {
         const cells = extract24Cells(fin, years);
         const flags = judgeWarnings({ cells, years, opinion });
 
+        // 정확도 경고: 본문 XML/감사보고서 fallback은 매출/영업 매칭 정확도 낮음
+        const src = fin.hasOfs ? fin.extractionSourceOfs : fin.extractionSourceCfs;
+        let warning: string | undefined;
+        if (src === "annual-report-body") {
+          warning = "데이터 출처: 사업보고서 본문 XML (Stage 1 미수신 fallback). IS 매칭 정확도 낮음 — DART 원본 검토 권장";
+        } else if (src === "audit-report") {
+          warning = "데이터 출처: 감사보고서 ZIP (Stage 3 fallback). IS 미지원 — 매출/영업/순익 0 가능. BS만 신뢰";
+        }
+
         const row: InsolvencyRow = {
           inputName: item.inputName,
           corpName: fin.companyInfo.corpName || item.corpName,
@@ -103,7 +112,8 @@ export async function POST(request: NextRequest) {
           cells,
           years,
           flags,
-          source: fin.hasCfs ? fin.extractionSourceCfs : fin.extractionSourceOfs,
+          source: src,
+          error: warning,
         };
         return row;
       } catch (e: unknown) {

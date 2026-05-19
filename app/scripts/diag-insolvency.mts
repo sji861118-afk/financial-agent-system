@@ -20,16 +20,26 @@ const dartMod: any = await import("../src/lib/dart-api.ts");
 const fetchAuditOpinion = dartMod.fetchAuditOpinion ?? dartMod.default?.fetchAuditOpinion;
 
 const NAME = process.argv[2] || "삼성전자";
+// --corp=00386937 형태로 corp_code 직접 지정 가능 (동명이인 회사 구분용)
+const CORP_OVERRIDE = process.argv.find((a) => a.startsWith("--corp="))?.split("=")[1];
 
 console.log(`\n${"=".repeat(60)}`);
-console.log(`부실징후점검 진단: ${NAME}`);
+console.log(`부실징후점검 진단: ${NAME}${CORP_OVERRIDE ? ` (corp_code=${CORP_OVERRIDE} 강제)` : ""}`);
 console.log("=".repeat(60));
 
 // 1) 매칭
-const match = findCorpCode(NAME);
-if (!match) {
-  console.error(`❌ findCorpCode 매칭 실패: ${NAME}`);
-  process.exit(1);
+let match: { corpCode: string; stockCode: string } | null;
+if (CORP_OVERRIDE) {
+  // corp_code 직접 지정 — stockCode는 dart-corp-codes에서 lookup
+  const cm: any = await import("../src/lib/dart-corp-codes.ts");
+  const findStock = cm.findStockCodeByCorpCode ?? cm.default?.findStockCodeByCorpCode;
+  match = { corpCode: CORP_OVERRIDE, stockCode: findStock(CORP_OVERRIDE) || "" };
+} else {
+  match = findCorpCode(NAME);
+  if (!match) {
+    console.error(`❌ findCorpCode 매칭 실패: ${NAME}`);
+    process.exit(1);
+  }
 }
 console.log(`✓ 매칭: corpCode=${match.corpCode} stockCode=${match.stockCode || "(비상장)"}`);
 
