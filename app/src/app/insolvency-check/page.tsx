@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, Fragment } from "react";
 import { AlertTriangle, Upload, Loader2, Search, Download, FileSpreadsheet, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,8 +16,8 @@ type Step = 1 | 2 | 3;
 interface MatchRowState {
   inputName: string;
   candidates: NameMatch[];
-  selectedCorpCode: string;   // 사용자가 dropdown으로 선택한 corp_code
-  manualCorpCode: string;     // 후보 0건일 때 수동 입력
+  selectedCorpCode: string;
+  manualCorpCode: string;
 }
 
 const FLAG_LABELS: Array<{ key: keyof Omit<WarningFlags, "evidence">; label: string; auto: boolean }> = [
@@ -51,7 +51,7 @@ async function parseXlsxNames(file: File): Promise<string[]> {
     }
     const trimmed = s.trim();
     if (!trimmed) return;
-    if (/고객명|회사명|차주명|기업명|상호/.test(trimmed)) return; // 헤더 자동 skip
+    if (/고객명|회사명|차주명|기업명|상호/.test(trimmed)) return;
     out.push(trimmed);
   });
   return out;
@@ -61,6 +61,32 @@ function fmtNum(v: number | undefined): string {
   if (v === undefined || v === null || isNaN(v)) return "-";
   if (v === 0) return "-";
   return Math.round(v / 1_000_000).toLocaleString("ko-KR");
+}
+
+function YNSelect({ value, auto, evidence, onChange }: {
+  value: YN;
+  auto: boolean;
+  evidence?: string;
+  onChange: (v: YN) => void;
+}) {
+  const cls =
+    value === "Y"
+      ? "bg-red-50 text-red-700 border-red-200"
+      : value === "N"
+        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+        : "bg-gray-50 text-gray-500 border-gray-200";
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as YN)}
+      className={`rounded border px-1.5 py-0.5 text-xs font-medium ${cls}`}
+      title={auto ? (evidence || "근거 없음") : "수동 입력"}
+    >
+      <option value="Y">Y</option>
+      <option value="N">N</option>
+      <option value="-">-</option>
+    </select>
+  );
 }
 
 export default function InsolvencyCheckPage() {
@@ -84,7 +110,6 @@ export default function InsolvencyCheckPage() {
       .filter((s) => s.length > 0);
   }, [rawInput]);
 
-  // ─── Step 1: 입력 ───
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -94,7 +119,6 @@ export default function InsolvencyCheckPage() {
         toast.error("회사명을 찾을 수 없습니다. 1행 1번째 컬럼에 회사명이 있는지 확인해주세요.");
         return;
       }
-      // 기존 입력과 병합 (중복 제거)
       const existing = new Set(names);
       const merged = [...names, ...parsed.filter((p) => !existing.has(p))];
       setRawInput(merged.join("\n"));
@@ -138,7 +162,6 @@ export default function InsolvencyCheckPage() {
     }
   };
 
-  // ─── Step 2: 매칭 결과 ───
   const updateMatch = (idx: number, patch: Partial<MatchRowState>) => {
     setMatches((prev) => prev.map((m, i) => (i === idx ? { ...m, ...patch } : m)));
   };
@@ -184,7 +207,6 @@ export default function InsolvencyCheckPage() {
     }
   };
 
-  // ─── Step 3: override + 다운로드 ───
   const updateFlag = (rowIdx: number, key: keyof Omit<WarningFlags, "evidence">, val: YN) => {
     setRows((prev) =>
       prev.map((r, i) =>
@@ -230,22 +252,22 @@ export default function InsolvencyCheckPage() {
   };
 
   return (
-    <div className="flex-1 overflow-auto bg-slate-950 p-6 text-slate-100">
+    <div className="flex-1 overflow-auto bg-muted/30 p-6">
       <div className="mx-auto max-w-7xl space-y-6">
         <header>
           <div className="flex items-center gap-3">
-            <AlertTriangle className="size-6 text-amber-400" />
-            <h1 className="text-2xl font-bold">부실징후점검 (전수조사)</h1>
+            <AlertTriangle className="size-6 text-amber-500" />
+            <h1 className="text-2xl font-bold text-foreground">부실징후점검 (전수조사)</h1>
             <Badge variant="outline" className="text-xs">Step {step}/3</Badge>
           </div>
-          <p className="mt-1 text-sm text-slate-400">
+          <p className="mt-1 text-sm text-muted-foreground">
             회사명단을 입력하면 DART에서 3개년 재무를 자동 추출하고 4개 자동 판정 + 4개 수동 입력으로 PDF 양식과 동일한 Excel을 생성합니다.
           </p>
         </header>
 
         {/* ─── STEP 1 ─── */}
         {step === 1 && (
-          <Card className="bg-slate-900/50 border-slate-800">
+          <Card>
             <CardHeader>
               <CardTitle className="text-base">Step 1. 회사명단 입력</CardTitle>
               <CardDescription>
@@ -259,17 +281,17 @@ export default function InsolvencyCheckPage() {
                   value={branch}
                   onChange={(e) => setBranch(e.target.value)}
                   placeholder="예: 강남지점"
-                  className="mt-1 bg-slate-800 border-slate-700 text-slate-100"
+                  className="mt-1"
                 />
               </div>
 
               <div>
                 <Label className="text-sm">회사명 ({names.length}건)</Label>
                 <textarea
-                  className="mt-1 w-full min-h-[200px] rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 font-mono"
+                  className="mt-1 w-full min-h-[200px] rounded-md border border-input bg-background px-3 py-2 text-sm font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   value={rawInput}
                   onChange={(e) => setRawInput(e.target.value)}
-                  placeholder={"(주)한국토지신탁\n신한자산신탁(주)\n케이비부동산신탁(주)\n..."}
+                  placeholder={"삼성전자\n..."}
                 />
               </div>
 
@@ -284,7 +306,6 @@ export default function InsolvencyCheckPage() {
                 <Button
                   variant="outline"
                   onClick={() => fileRef.current?.click()}
-                  className="border-slate-700 text-slate-200"
                 >
                   <Upload className="size-4 mr-2" />
                   Excel 업로드 (A열 회사명)
@@ -292,7 +313,7 @@ export default function InsolvencyCheckPage() {
                 <Button
                   onClick={handleMatch}
                   disabled={matching || names.length === 0}
-                  className="bg-indigo-600 hover:bg-indigo-500"
+                  className="bg-indigo-600 hover:bg-indigo-700"
                 >
                   {matching ? <Loader2 className="size-4 mr-2 animate-spin" /> : <Search className="size-4 mr-2" />}
                   매칭 조회 ({names.length}건)
@@ -304,7 +325,7 @@ export default function InsolvencyCheckPage() {
 
         {/* ─── STEP 2 ─── */}
         {step === 2 && (
-          <Card className="bg-slate-900/50 border-slate-800">
+          <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
                 <CardTitle className="text-base">Step 2. 매칭 확인 ({resolvedItems.length}/{matches.length})</CardTitle>
@@ -312,36 +333,36 @@ export default function InsolvencyCheckPage() {
                   후보 N건이면 dropdown에서 선택, 0건이면 corp_code 직접 입력하세요.
                 </CardDescription>
               </div>
-              <Button variant="ghost" onClick={() => setStep(1)} className="text-slate-400">
+              <Button variant="ghost" onClick={() => setStep(1)}>
                 <X className="size-4 mr-1" /> 다시 입력
               </Button>
             </CardHeader>
             <CardContent>
               <Table>
                 <TableHeader>
-                  <TableRow className="border-slate-800">
-                    <TableHead className="text-slate-300">입력명</TableHead>
-                    <TableHead className="text-slate-300">매칭 회사 선택</TableHead>
-                    <TableHead className="text-slate-300">상태</TableHead>
+                  <TableRow>
+                    <TableHead>입력명</TableHead>
+                    <TableHead>매칭 회사 선택</TableHead>
+                    <TableHead className="w-[140px]">상태</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {matches.map((m, idx) => (
-                    <TableRow key={idx} className="border-slate-800">
-                      <TableCell className="text-sm">{m.inputName}</TableCell>
+                    <TableRow key={idx}>
+                      <TableCell className="text-sm font-medium">{m.inputName}</TableCell>
                       <TableCell>
                         {m.candidates.length === 0 ? (
                           <Input
                             value={m.manualCorpCode}
                             onChange={(e) => updateMatch(idx, { manualCorpCode: e.target.value })}
                             placeholder="corp_code 8자리 (예: 00126380)"
-                            className="bg-slate-800 border-slate-700 text-slate-100 max-w-xs"
+                            className="max-w-xs"
                           />
                         ) : (
                           <select
                             value={m.selectedCorpCode}
                             onChange={(e) => updateMatch(idx, { selectedCorpCode: e.target.value })}
-                            className="w-full max-w-md rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-sm text-slate-100"
+                            className="w-full max-w-md rounded-md border border-input bg-background px-2 py-1.5 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           >
                             <option value="">(선택 안 함)</option>
                             {m.candidates.map((c) => (
@@ -356,7 +377,7 @@ export default function InsolvencyCheckPage() {
                         {m.candidates.length === 0 ? (
                           <Badge variant="destructive" className="text-xs">매칭 없음</Badge>
                         ) : m.candidates.length === 1 ? (
-                          <Badge className="bg-green-700 text-xs">자동 매칭</Badge>
+                          <Badge className="bg-emerald-100 text-emerald-700 border-emerald-300 hover:bg-emerald-100 text-xs">자동 매칭</Badge>
                         ) : (
                           <Badge variant="secondary" className="text-xs">{m.candidates.length}건 후보</Badge>
                         )}
@@ -369,13 +390,13 @@ export default function InsolvencyCheckPage() {
                 <Button
                   onClick={handleFetch}
                   disabled={fetching || resolvedItems.length === 0}
-                  className="bg-indigo-600 hover:bg-indigo-500"
+                  className="bg-indigo-600 hover:bg-indigo-700"
                 >
                   {fetching ? <Loader2 className="size-4 mr-2 animate-spin" /> : <Search className="size-4 mr-2" />}
                   재무 일괄 조회 ({resolvedItems.length}건)
                 </Button>
               </div>
-              <p className="mt-2 text-xs text-slate-500">
+              <p className="mt-2 text-xs text-muted-foreground">
                 ※ 회사당 약 5~10초 소요. 15건 초과 시 클라이언트에서 분할 호출 권장 (Vercel 60s 한계).
               </p>
             </CardContent>
@@ -386,14 +407,14 @@ export default function InsolvencyCheckPage() {
         {step === 3 && (
           <>
             {fetchErrors.length > 0 && (
-              <Card className="bg-red-950/30 border-red-900">
+              <Card className="border-red-200 bg-red-50">
                 <CardHeader>
-                  <CardTitle className="text-sm text-red-400">
+                  <CardTitle className="text-sm text-red-700">
                     조회 실패 {fetchErrors.length}건
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <ul className="text-xs text-red-300 space-y-1">
+                  <ul className="text-xs text-red-600 space-y-1">
                     {fetchErrors.map((e, i) => (
                       <li key={i}>• {e.inputName} — {e.reason}</li>
                     ))}
@@ -402,7 +423,7 @@ export default function InsolvencyCheckPage() {
               </Card>
             )}
 
-            <Card className="bg-slate-900/50 border-slate-800">
+            <Card>
               <CardHeader className="flex flex-row items-center justify-between">
                 <div>
                   <CardTitle className="text-base">Step 3. 결과 확인 + 다운로드</CardTitle>
@@ -411,13 +432,13 @@ export default function InsolvencyCheckPage() {
                   </CardDescription>
                 </div>
                 <div className="flex gap-2">
-                  <Button variant="ghost" onClick={handleReset} className="text-slate-400">
+                  <Button variant="ghost" onClick={handleReset}>
                     <X className="size-4 mr-1" /> 초기화
                   </Button>
                   <Button
                     onClick={handleDownload}
                     disabled={downloading || rows.length === 0}
-                    className="bg-emerald-600 hover:bg-emerald-500"
+                    className="bg-emerald-600 hover:bg-emerald-700"
                   >
                     {downloading ? <Loader2 className="size-4 mr-2 animate-spin" /> : <Download className="size-4 mr-2" />}
                     Excel 다운로드
@@ -427,31 +448,31 @@ export default function InsolvencyCheckPage() {
               <CardContent className="overflow-x-auto">
                 <Table className="text-xs">
                   <TableHeader>
-                    <TableRow className="border-slate-800">
-                      <TableHead className="text-slate-300 sticky left-0 bg-slate-900 z-10 min-w-[140px]">고객명</TableHead>
-                      <TableHead className="text-slate-300">설립일</TableHead>
+                    <TableRow>
+                      <TableHead className="sticky left-0 bg-background z-10 min-w-[140px]">고객명</TableHead>
+                      <TableHead>설립일</TableHead>
                       {rows[0]?.years.map((y, gi) => (
-                        <TableHead key={gi} colSpan={4} className="text-center text-amber-300 border-l border-slate-700">
+                        <TableHead key={`yh-${gi}`} colSpan={4} className="text-center text-amber-700 border-l">
                           {y}년 (백만)
                         </TableHead>
                       ))}
                       {FLAG_LABELS.map((f) => (
-                        <TableHead key={f.key} className={`text-center min-w-[80px] ${f.auto ? "text-cyan-300" : "text-purple-300"}`}>
+                        <TableHead key={f.key} className={`text-center min-w-[80px] ${f.auto ? "text-cyan-700" : "text-purple-700"}`}>
                           {f.label}
-                          {f.auto && <span className="block text-[10px] text-cyan-500">자동</span>}
-                          {!f.auto && <span className="block text-[10px] text-purple-500">수동</span>}
+                          {f.auto && <span className="block text-[10px] text-cyan-500 font-normal">자동</span>}
+                          {!f.auto && <span className="block text-[10px] text-purple-500 font-normal">수동</span>}
                         </TableHead>
                       ))}
                     </TableRow>
-                    <TableRow className="border-slate-800">
-                      <TableHead colSpan={2} className="text-slate-500 sticky left-0 bg-slate-900 z-10"></TableHead>
+                    <TableRow>
+                      <TableHead colSpan={2} className="sticky left-0 bg-background z-10"></TableHead>
                       {rows[0]?.years.map((_, gi) => (
-                        <>
-                          <TableHead key={`a-${gi}`} className="text-slate-400 border-l border-slate-700">자산</TableHead>
-                          <TableHead key={`b-${gi}`} className="text-slate-400">차입금</TableHead>
-                          <TableHead key={`c-${gi}`} className="text-slate-400">매출</TableHead>
-                          <TableHead key={`d-${gi}`} className="text-slate-400">순익</TableHead>
-                        </>
+                        <Fragment key={`subh-${gi}`}>
+                          <TableHead className="text-muted-foreground border-l text-right">자산</TableHead>
+                          <TableHead className="text-muted-foreground text-right">차입금</TableHead>
+                          <TableHead className="text-muted-foreground text-right">매출</TableHead>
+                          <TableHead className="text-muted-foreground text-right">순익</TableHead>
+                        </Fragment>
                       ))}
                       {FLAG_LABELS.map((f) => (
                         <TableHead key={`flag-empty-${f.key}`}></TableHead>
@@ -462,43 +483,33 @@ export default function InsolvencyCheckPage() {
                     {rows.map((r, idx) => {
                       const finalFlags = { ...r.flags, ...(r.flagOverrides || {}) };
                       return (
-                        <TableRow key={idx} className="border-slate-800">
-                          <TableCell className="font-medium sticky left-0 bg-slate-900 z-10">{r.corpName}</TableCell>
-                          <TableCell className="text-slate-400">{r.estDt}</TableCell>
+                        <TableRow key={idx}>
+                          <TableCell className="font-medium sticky left-0 bg-background z-10">{r.corpName}</TableCell>
+                          <TableCell className="text-muted-foreground">{r.estDt}</TableCell>
                           {r.years.map((y, gi) => {
                             const yc = r.cells.byYear[y];
+                            const neg = yc?.netIncome !== undefined && yc.netIncome < 0;
                             return (
-                              <>
-                                <TableCell key={`a-${gi}`} className="text-right border-l border-slate-700">{fmtNum(yc?.totalAssets)}</TableCell>
-                                <TableCell key={`b-${gi}`} className="text-right">{fmtNum(yc?.borrowings)}</TableCell>
-                                <TableCell key={`c-${gi}`} className="text-right">{fmtNum(yc?.revenue)}</TableCell>
-                                <TableCell key={`d-${gi}`} className={`text-right ${yc?.netIncome !== undefined && yc.netIncome < 0 ? "text-red-400" : ""}`}>
+                              <Fragment key={`yc-${gi}`}>
+                                <TableCell className="text-right border-l">{fmtNum(yc?.totalAssets)}</TableCell>
+                                <TableCell className="text-right">{fmtNum(yc?.borrowings)}</TableCell>
+                                <TableCell className="text-right">{fmtNum(yc?.revenue)}</TableCell>
+                                <TableCell className={`text-right ${neg ? "text-red-600 font-medium" : ""}`}>
                                   {fmtNum(yc?.netIncome)}
                                 </TableCell>
-                              </>
+                              </Fragment>
                             );
                           })}
                           {FLAG_LABELS.map((f) => {
                             const val = (finalFlags[f.key] as YN) || "-";
-                            const auto = f.auto;
                             return (
                               <TableCell key={f.key} className="text-center">
-                                <select
+                                <YNSelect
                                   value={val}
-                                  onChange={(e) => updateFlag(idx, f.key, e.target.value as YN)}
-                                  className={`rounded px-1.5 py-0.5 text-xs ${
-                                    val === "Y"
-                                      ? "bg-red-900/50 text-red-300"
-                                      : val === "N"
-                                        ? "bg-slate-800 text-slate-300"
-                                        : "bg-slate-800 text-slate-500"
-                                  }`}
-                                  title={auto ? (r.flags.evidence[f.key as keyof typeof r.flags.evidence] || "근거 없음") : "수동 입력"}
-                                >
-                                  <option value="Y">Y</option>
-                                  <option value="N">N</option>
-                                  <option value="-">-</option>
-                                </select>
+                                  auto={f.auto}
+                                  evidence={r.flags.evidence[f.key as keyof typeof r.flags.evidence]}
+                                  onChange={(v) => updateFlag(idx, f.key, v)}
+                                />
                               </TableCell>
                             );
                           })}
@@ -507,9 +518,9 @@ export default function InsolvencyCheckPage() {
                     })}
                   </TableBody>
                 </Table>
-                <p className="mt-3 text-xs text-slate-500">
+                <p className="mt-3 text-xs text-muted-foreground">
                   <FileSpreadsheet className="inline size-3 mr-1" />
-                  Excel 출력 시 PDF 양식과 동일한 가로형 35열로 변환됩니다. "자동판정근거" 보조 시트에 4개 룰의 상세 evidence가 포함됩니다.
+                  Excel 출력 시 PDF 양식과 동일한 가로형 35열로 변환됩니다. &quot;자동판정근거&quot; 보조 시트에 4개 룰의 상세 evidence가 포함됩니다.
                 </p>
               </CardContent>
             </Card>
