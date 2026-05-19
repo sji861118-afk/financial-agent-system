@@ -18,9 +18,13 @@ const Y_FILL: ExcelJS.Fill = {
   type: "pattern", pattern: "solid", fgColor: { argb: "FFFDD2D2" },
 };
 
-/** 백만원 변환 (DART raw = 원 단위) */
+/**
+ * DART buildStatements가 row[year]에 이미 백만원 단위 string을 저장한다
+ * (toMillions, dart-api.ts:546). extract24Cells의 parseNum 결과는 이미
+ * 백만 단위 number이므로 여기서는 정수화만.
+ */
 function toMillions(v: number): number {
-  return Math.round(v / 1_000_000);
+  return Math.round(v);
 }
 
 /** YYYYMMDD → YYYY-MM-DD */

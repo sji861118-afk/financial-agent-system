@@ -14,11 +14,15 @@ import type { Cells24, WarningFlags, YN } from "./types";
  *     - 당기순손익 3년: 24,074 / 27,922 / 25,247  → 모두 양수 → 3년연속결손 N
  */
 
-const fmt = (v: number): string =>
-  v === 0 ? "0" : v.toLocaleString("ko-KR", { maximumFractionDigits: 0 });
+/**
+ * dart-api.ts의 buildStatements가 row[year]에 이미 백만원 단위 string을
+ * 저장한다 (toMillions 호출, dart-api.ts:546). extract24Cells는 parseNum으로
+ * 그 숫자를 그대로 number로 반환하므로 여기서는 콤마만 찍는다.
+ */
+const fmtMillions = (v: number): string =>
+  v === 0 ? "0" : Math.round(v).toLocaleString("ko-KR", { maximumFractionDigits: 0 });
 
-/** 백만원 단위 포맷 (DART raw는 원 단위) */
-const fmtMillions = (v: number): string => fmt(Math.round(v / 1_000_000));
+const fmt = fmtMillions;
 
 export interface JudgeWarningsContext {
   cells: Cells24;

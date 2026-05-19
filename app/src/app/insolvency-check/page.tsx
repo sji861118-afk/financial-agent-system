@@ -57,10 +57,12 @@ async function parseXlsxNames(file: File): Promise<string[]> {
   return out;
 }
 
+// DART buildStatements가 이미 백만원 단위로 저장 (dart-api.ts:546 toMillions).
+// parseNum 결과(number)는 이미 백만 단위 → 추가 변환 없이 콤마만.
 function fmtNum(v: number | undefined): string {
   if (v === undefined || v === null || isNaN(v)) return "-";
   if (v === 0) return "-";
-  return Math.round(v / 1_000_000).toLocaleString("ko-KR");
+  return Math.round(v).toLocaleString("ko-KR");
 }
 
 function YNSelect({ value, auto, evidence, onChange }: {
