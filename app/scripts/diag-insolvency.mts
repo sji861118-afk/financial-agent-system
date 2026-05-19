@@ -81,6 +81,22 @@ for (const y of years) {
     `  ${y}: 자산=${m(c.totalAssets)} 부채=${m(c.totalLiab)} 자본=${m(c.totalEquity)} 차입=${m(c.borrowings)} ` +
       `매출=${m(c.revenue)} 영업=${m(c.operatingIncome)} 이자=${m(c.interestExpense)} 순익=${m(c.netIncome)}`,
   );
+  // 매칭 추적 — 어떤 DART account_name에서 추출됐는지
+  const mm = cells.matches?.[y];
+  if (mm) {
+    const mt = (k: string) => {
+      const v = (mm as any)[k];
+      if (!v?.account) return `${k}=[MISS]`;
+      const ksuffix = v.kind === "exact" ? "" : `(${v.kind})`;
+      return `${k}=${v.account}${ksuffix}`;
+    };
+    console.log(
+      `       ↳ ${mt("totalAssets")} | ${mt("totalLiab")} | ${mt("totalEquity")} | ${mt("borrowings")}`,
+    );
+    console.log(
+      `       ↳ ${mt("revenue")} | ${mt("operatingIncome")} | ${mt("interestExpense")} | ${mt("netIncome")}`,
+    );
+  }
 }
 
 // 4.5) IS rows raw dump (도메인 매칭 확인용)

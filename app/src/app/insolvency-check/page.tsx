@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
-import type { NameMatch, InsolvencyMatchResult, ResolvedCompany, InsolvencyRow, YN, WarningFlags } from "@/lib/insolvency/types";
+import type { NameMatch, InsolvencyMatchResult, ResolvedCompany, InsolvencyRow, YN, WarningFlags, CellMatch } from "@/lib/insolvency/types";
 
 type Step = 1 | 2 | 3;
 
@@ -63,6 +63,21 @@ function fmtNum(v: number | undefined): string {
   if (v === undefined || v === null || isNaN(v)) return "-";
   if (v === 0) return "-";
   return Math.round(v).toLocaleString("ko-KR");
+}
+
+/**
+ * 셀별 매칭 tooltip 문자열 — "매칭: 영업수익 (정확)" 식.
+ * UI hover 시 사용자가 "이 값이 어떤 DART 계정에서 추출됐는가" 즉시 확인 가능.
+ */
+function matchTooltip(label: string, m: CellMatch | undefined): string {
+  if (!m || !m.account || m.kind === "missing") return `${label}: 매칭 실패 (값 0)`;
+  const kindLabel =
+    m.kind === "exact" ? "정확 매칭"
+    : m.kind === "partial" ? "부분 매칭"
+    : m.kind === "sum" ? "복수 행 SUM"
+    : m.kind === "fallback" ? "후순위 fallback"
+    : m.kind;
+  return `${label}\n매칭: ${m.account}\n종류: ${kindLabel}${m.detail ? `\n비고: ${m.detail}` : ""}`;
 }
 
 function YNSelect({ value, auto, evidence, onChange }: {
@@ -500,19 +515,21 @@ export default function InsolvencyCheckPage() {
                           <TableCell className="text-muted-foreground">{r.estDt}</TableCell>
                           {r.years.map((y, gi) => {
                             const yc = r.cells.byYear[y];
+                            const ym = r.cells.matches?.[y];
                             const opNeg = yc?.operatingIncome !== undefined && yc.operatingIncome < 0;
                             const niNeg = yc?.netIncome !== undefined && yc.netIncome < 0;
                             const equityNeg = yc?.totalEquity !== undefined && yc.totalEquity < 0;
+                            const cellCls = "text-right whitespace-nowrap cursor-help";
                             return (
                               <Fragment key={`yc-${gi}`}>
-                                <TableCell className="text-right border-l whitespace-nowrap">{fmtNum(yc?.totalAssets)}</TableCell>
-                                <TableCell className="text-right whitespace-nowrap">{fmtNum(yc?.totalLiab)}</TableCell>
-                                <TableCell className={`text-right whitespace-nowrap ${equityNeg ? "text-red-600 font-medium" : ""}`}>{fmtNum(yc?.totalEquity)}</TableCell>
-                                <TableCell className="text-right whitespace-nowrap">{fmtNum(yc?.borrowings)}</TableCell>
-                                <TableCell className="text-right whitespace-nowrap">{fmtNum(yc?.revenue)}</TableCell>
-                                <TableCell className={`text-right whitespace-nowrap ${opNeg ? "text-red-600 font-medium" : ""}`}>{fmtNum(yc?.operatingIncome)}</TableCell>
-                                <TableCell className="text-right whitespace-nowrap">{fmtNum(yc?.interestExpense)}</TableCell>
-                                <TableCell className={`text-right whitespace-nowrap ${niNeg ? "text-red-600 font-medium" : ""}`}>
+                                <TableCell className={`${cellCls} border-l`} title={matchTooltip(`${y} 자산총계`, ym?.totalAssets)}>{fmtNum(yc?.totalAssets)}</TableCell>
+                                <TableCell className={cellCls} title={matchTooltip(`${y} 부채총계`, ym?.totalLiab)}>{fmtNum(yc?.totalLiab)}</TableCell>
+                                <TableCell className={`${cellCls} ${equityNeg ? "text-red-600 font-medium" : ""}`} title={matchTooltip(`${y} 자본총계`, ym?.totalEquity)}>{fmtNum(yc?.totalEquity)}</TableCell>
+                                <TableCell className={cellCls} title={matchTooltip(`${y} 차입금`, ym?.borrowings)}>{fmtNum(yc?.borrowings)}</TableCell>
+                                <TableCell className={cellCls} title={matchTooltip(`${y} 매출액`, ym?.revenue)}>{fmtNum(yc?.revenue)}</TableCell>
+                                <TableCell className={`${cellCls} ${opNeg ? "text-red-600 font-medium" : ""}`} title={matchTooltip(`${y} 영업손익`, ym?.operatingIncome)}>{fmtNum(yc?.operatingIncome)}</TableCell>
+                                <TableCell className={cellCls} title={matchTooltip(`${y} 이자비용`, ym?.interestExpense)}>{fmtNum(yc?.interestExpense)}</TableCell>
+                                <TableCell className={`${cellCls} ${niNeg ? "text-red-600 font-medium" : ""}`} title={matchTooltip(`${y} 당기순손익`, ym?.netIncome)}>
                                   {fmtNum(yc?.netIncome)}
                                 </TableCell>
                               </Fragment>
@@ -539,7 +556,9 @@ export default function InsolvencyCheckPage() {
                 )}
                 <p className="mt-3 text-xs text-muted-foreground">
                   <FileSpreadsheet className="inline size-3 mr-1" />
-                  Excel 출력 시 PDF 양식과 동일한 가로형 35열로 변환됩니다. &quot;자동판정근거&quot; 보조 시트에 4개 룰의 상세 evidence가 포함됩니다.
+                  Excel 출력 시 PDF 양식과 동일한 가로형 35열로 변환됩니다. &quot;자동판정근거&quot;·&quot;재무매칭상세&quot; 보조 시트 + 셀 메모로 매칭 account_name이 함께 출력됩니다.
+                  <br />
+                  <span className="text-cyan-600">💡 재무 셀에 마우스를 올리면 어떤 DART 계정명에서 추출됐는지 확인할 수 있습니다.</span>
                 </p>
               </CardContent>
             </Card>

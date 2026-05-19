@@ -1,5 +1,5 @@
 import type { AuditOpinionInfo } from "@/lib/dart-api";
-import type { Cells24, WarningFlags, YN } from "./types";
+import type { Cells24, CellMatch, WarningFlags, YN } from "./types";
 
 /**
  * 부실징후 자동 판정 룰.
@@ -24,6 +24,20 @@ const fmtMillions = (v: number): string =>
 
 const fmt = fmtMillions;
 
+/**
+ * CellMatch → "[account_name]" 형태 단축 표기 (UI tooltip + Excel evidence에 노출).
+ *   - exact   → "[영업수익]"
+ *   - partial → "[영업수익†]"            (부분매칭, † = imperfect)
+ *   - sum     → "[단기차입금+사채+리스부채]"
+ *   - fallback→ "[금융비용⇣]"            (⇣ = 후순위 fallback)
+ *   - missing → ""                       (값이 0인 경우 매칭명 표기 생략)
+ */
+function fmtMatch(m: CellMatch | undefined): string {
+  if (!m || !m.account || m.kind === "missing") return "";
+  const suffix = m.kind === "partial" ? "†" : m.kind === "fallback" ? "⇣" : "";
+  return `[${m.account}${suffix}]`;
+}
+
 export interface JudgeWarningsContext {
   cells: Cells24;
   years: string[];                       // [직전, 직전전, 직전전전]
@@ -45,6 +59,9 @@ export function judgeWarnings(ctx: JudgeWarningsContext): WarningFlags {
   const c1 = cells.byYear[y1];
   const c2 = cells.byYear[y2];
   const c3 = cells.byYear[y3];
+  const m1 = cells.matches[y1];
+  const m2 = cells.matches[y2];
+  const m3 = cells.matches[y3];
 
   const flags: WarningFlags = {
     threeYearsLoss: "-",
@@ -69,14 +86,14 @@ export function judgeWarnings(ctx: JudgeWarningsContext): WarningFlags {
   } else if (c1.netIncome < 0 && c2 && c2.netIncome < 0 && c3 && c3.netIncome < 0) {
     flags.threeYearsLoss = "Y";
     flags.evidence.threeYearsLoss =
-      `당기순손익 ${y1}:${fmtMillions(c1.netIncome)} · ${y2}:${fmtMillions(c2.netIncome)} · ${y3}:${fmtMillions(c3.netIncome)} (3년 연속 결손)`;
+      `당기순손익${fmtMatch(m1?.netIncome)} ${y1}:${fmtMillions(c1.netIncome)} · ${y2}:${fmtMillions(c2.netIncome)} · ${y3}:${fmtMillions(c3.netIncome)} (3년 연속 결손)`;
   } else {
     flags.threeYearsLoss = "N";
     const parts: string[] = [];
     if (c1) parts.push(`${y1}:${fmtMillions(c1.netIncome)}`);
     if (c2) parts.push(`${y2}:${fmtMillions(c2.netIncome)}`); else parts.push(`${y2}:결측`);
     if (c3) parts.push(`${y3}:${fmtMillions(c3.netIncome)}`); else parts.push(`${y3}:결측`);
-    flags.evidence.threeYearsLoss = `당기순손익 ${parts.join(" · ")}`;
+    flags.evidence.threeYearsLoss = `당기순손익${fmtMatch(m1?.netIncome)} ${parts.join(" · ")}`;
   }
 
   // ─── ② 완전자본잠식 ───
@@ -86,10 +103,10 @@ export function judgeWarnings(ctx: JudgeWarningsContext): WarningFlags {
     flags.evidence.fullCapitalImpair = `${y1} 자본총계 데이터 미수신`;
   } else if (c1.totalEquity < 0) {
     flags.fullCapitalImpair = "Y";
-    flags.evidence.fullCapitalImpair = `${y1} 자본총계 ${fmtMillions(c1.totalEquity)}백만 (음수)`;
+    flags.evidence.fullCapitalImpair = `${y1} 자본총계${fmtMatch(m1?.totalEquity)} ${fmtMillions(c1.totalEquity)}백만 (음수)`;
   } else {
     flags.fullCapitalImpair = "N";
-    flags.evidence.fullCapitalImpair = `${y1} 자본총계 ${fmtMillions(c1.totalEquity)}백만`;
+    flags.evidence.fullCapitalImpair = `${y1} 자본총계${fmtMatch(m1?.totalEquity)} ${fmtMillions(c1.totalEquity)}백만`;
   }
 
   // ─── ③ 1·2금융권차입금 > 매출액 (근사: 전체 총차입금 > 매출액) ───
@@ -108,15 +125,15 @@ export function judgeWarnings(ctx: JudgeWarningsContext): WarningFlags {
   } else if (c1.revenue === 0 && c1.borrowings > 0) {
     flags.borrowGtRevenue = "Y";
     flags.evidence.borrowGtRevenue =
-      `${y1} 매출액 0 (신설/SPC) · 차입금 ${fmtMillions(c1.borrowings)}백만`;
+      `${y1} 매출액 0 (신설/SPC) · 차입금${fmtMatch(m1?.borrowings)} ${fmtMillions(c1.borrowings)}백만`;
   } else if (c1.borrowings > c1.revenue) {
     flags.borrowGtRevenue = "Y";
     flags.evidence.borrowGtRevenue =
-      `${y1} 차입금 ${fmtMillions(c1.borrowings)}백만 > 매출액 ${fmtMillions(c1.revenue)}백만`;
+      `${y1} 차입금${fmtMatch(m1?.borrowings)} ${fmtMillions(c1.borrowings)}백만 > 매출액${fmtMatch(m1?.revenue)} ${fmtMillions(c1.revenue)}백만`;
   } else {
     flags.borrowGtRevenue = "N";
     flags.evidence.borrowGtRevenue =
-      `${y1} 차입금 ${fmtMillions(c1.borrowings)}백만 ≤ 매출액 ${fmtMillions(c1.revenue)}백만`;
+      `${y1} 차입금${fmtMatch(m1?.borrowings)} ${fmtMillions(c1.borrowings)}백만 ≤ 매출액${fmtMatch(m1?.revenue)} ${fmtMillions(c1.revenue)}백만`;
   }
 
   // ─── ④ 감사의견 거절 ───
@@ -142,6 +159,8 @@ export function judgeWarnings(ctx: JudgeWarningsContext): WarningFlags {
   }
 
   void fmt;
+  void m2;
+  void m3;
   return flags;
 }
 

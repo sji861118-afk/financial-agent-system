@@ -1,13 +1,16 @@
 import type { FinancialResult, FinancialRow } from "@/lib/dart-api";
-import type { Cells24, YearCells } from "./types";
+import type { Cells24, CellMatch, YearCellMatches, YearCells } from "./types";
 
 /**
- * FinancialResult → 24재무셀 추출.
+ * FinancialResult → 24재무셀 추출 (+ 매칭 추적).
  *
  * 매칭 전략:
  *   - 연결(CFS) 우선 (재무분석은 연결 기준이 본질), 없으면 개별(OFS)
  *   - 정확매칭 → 부분매칭 fallback (dart-api.ts:596-616 calcRatios 패턴 미러링)
  *   - 차입금 계산은 dart-api.ts:735-810 "차입금 계산 (재무분석 전문가 기준)" 룰을 단순화 복제
+ *
+ * 매칭 추적: 모든 추출 함수는 `{ value, match }`를 반환. 사용자 피드백
+ * ("어떤 항목으로 추출되는지 모르겠음") 대응 — UI tooltip + Excel cell comment에 노출.
  *
  * 단위: DART raw 단위(원). 호출 측에서 백만원 변환 (`Math.round(v / 1_000_000)`).
  */
@@ -34,14 +37,18 @@ function parseNum(v: string | number | undefined): number {
   return negative ? -n : n;
 }
 
+interface MR { value: number; match: CellMatch; }
+
+const NO_MATCH: CellMatch = { account: "", kind: "missing" };
+
 /** 첫 매칭 정책 (기존 — 일반 회사 회귀 방지). BS 등 outlier 위험 항목에 사용. */
-function get(rows: FinancialRow[], keywords: string[], year: string): number {
+function getMR(rows: FinancialRow[], keywords: string[], year: string): MR {
   for (const r of rows) {
     const norm = normalizeAcct(r.account);
     for (const kw of keywords) {
       if (norm === kw.replace(/\s/g, "")) {
         const v = parseNum(r[year]);
-        if (v !== 0) return v;
+        if (v !== 0) return { value: v, match: { account: r.account, kind: "exact" } };
       }
     }
   }
@@ -50,102 +57,121 @@ function get(rows: FinancialRow[], keywords: string[], year: string): number {
     for (const kw of keywords) {
       if (norm.includes(kw.replace(/\s/g, ""))) {
         const v = parseNum(r[year]);
-        if (v !== 0) return v;
+        if (v !== 0) return { value: v, match: { account: r.account, kind: "partial" } };
       }
     }
   }
-  return 0;
+  return { value: 0, match: NO_MATCH };
 }
 
-function getExact(rows: FinancialRow[], keywords: string[], year: string): number {
+function getExactMR(rows: FinancialRow[], keywords: string[], year: string): MR {
   for (const r of rows) {
     const norm = normalizeAcct(r.account);
     for (const kw of keywords) {
-      if (norm === kw.replace(/\s/g, "")) return parseNum(r[year]);
+      if (norm === kw.replace(/\s/g, "")) {
+        return { value: parseNum(r[year]), match: { account: r.account, kind: "exact" } };
+      }
     }
   }
-  return 0;
+  return { value: 0, match: NO_MATCH };
 }
 
 /**
- * 정확매칭 후보 중 절댓값 최대값 반환.
+ * 정확매칭 후보 중 절댓값 최대값 반환 (+ 매칭명).
  * dart-api.ts Stage 2(annual-report-body)가 같은 IS section의 별도/연결/
  * 분기/통합 표를 모두 isItems에 통합. 첫 매칭이 보조 부분표(작은 값)일 경우
  * max로 본 계정 합계를 찾음.
- *
- * 시니어 시각 정책:
- *   - IS 항목(매출/영업이익/순이익)에만 적용 (BS는 outlier 위험 — 자회사 합계
- *     누락으로 totalLiab+totalEquity 보완 시 잘못된 자산총계 산출 가능)
- *   - 첫 매칭이 0인 경우의 fallback으로 사용 (정상 회사는 첫 매칭 = max = 동일)
  */
-function getExactMax(rows: FinancialRow[], keywords: string[], year: string): number {
+function getExactMaxMR(rows: FinancialRow[], keywords: string[], year: string): MR {
   let maxV = 0;
+  let maxAcc = "";
   for (const r of rows) {
     const norm = normalizeAcct(r.account);
     for (const kw of keywords) {
       if (norm === kw.replace(/\s/g, "")) {
         const v = parseNum(r[year]);
-        if (Math.abs(v) > Math.abs(maxV)) maxV = v;
+        if (Math.abs(v) > Math.abs(maxV)) {
+          maxV = v;
+          maxAcc = r.account;
+        }
       }
     }
   }
-  return maxV;
+  return maxAcc
+    ? { value: maxV, match: { account: maxAcc, kind: "exact", detail: "max" } }
+    : { value: 0, match: NO_MATCH };
 }
 
 /** 부분 매칭 + max (IS 항목 fallback). */
-function getMax(rows: FinancialRow[], keywords: string[], year: string): number {
-  const exact = getExactMax(rows, keywords, year);
-  if (exact !== 0) return exact;
+function getMaxMR(rows: FinancialRow[], keywords: string[], year: string): MR {
+  const exact = getExactMaxMR(rows, keywords, year);
+  if (exact.value !== 0) return exact;
   let maxV = 0;
+  let maxAcc = "";
   for (const r of rows) {
     const norm = normalizeAcct(r.account);
     for (const kw of keywords) {
       if (norm.includes(kw.replace(/\s/g, ""))) {
         const v = parseNum(r[year]);
-        if (Math.abs(v) > Math.abs(maxV)) maxV = v;
+        if (Math.abs(v) > Math.abs(maxV)) {
+          maxV = v;
+          maxAcc = r.account;
+        }
       }
     }
   }
-  return maxV;
+  return maxAcc
+    ? { value: maxV, match: { account: maxAcc, kind: "partial", detail: "max" } }
+    : { value: 0, match: NO_MATCH };
 }
 
 /**
- * 부호 처리 매칭. DART의 계정명 컨벤션:
+ * 부호 처리 매칭 (+ 매칭명). DART의 계정명 컨벤션:
  *   - "영업이익" / "당기순이익" / "영업이익(손실)" / "당기순이익(손실)" 통합 계정 → raw 값의 부호 그대로 사용
  *   - "영업손실" / "당기순손실" / "분기순손실" / "반기순손실" 등 손실 단독 계정 → raw가 절댓값(양수)으로 옴 → 음수로 변환
  *
  * 호출 측: profitKeywords(통합·이익)와 lossKeywords(손실 단독)를 분리해서 전달.
  * 우진물산처럼 영업손실/순손실 계정으로만 표기되는 회사에서 부호 오류 방지.
  */
-function getSignedProfit(
+function getSignedProfitMR(
   rows: FinancialRow[],
   profitKeywords: string[],
   lossKeywords: string[],
   year: string,
-): number {
+): MR {
   // 1순위: 손실 계정명 정확 매칭 → -|v|
   for (const r of rows) {
     const norm = normalizeAcct(r.account);
     for (const kw of lossKeywords) {
       if (norm === kw.replace(/\s/g, "")) {
         const v = parseNum(r[year]);
-        if (v !== 0) return -Math.abs(v);
+        if (v !== 0) {
+          return {
+            value: -Math.abs(v),
+            match: { account: r.account, kind: "exact", detail: "손실 계정 → 음수 변환" },
+          };
+        }
       }
     }
   }
-  // 2순위: 이익(통합 포함) 계정명 → raw 부호 그대로 (DART가 이미 음수면 음수)
-  return get(rows, profitKeywords, year);
+  // 2순위: 이익(통합 포함) 계정명 → raw 부호 그대로
+  return getMR(rows, profitKeywords, year);
 }
 
 /**
- * 총차입금 계산. dart-api.ts:735-810 룰 압축 복제.
+ * 총차입금 계산 (+ 매칭된 모든 계정명 SUM). dart-api.ts:735-810 룰 압축 복제.
  *  - "차입부채" 단일 행이 있으면 그것을 사용
  *  - 없으면 단기/장기 차입금·사채·리스부채·대출금 SUM (할인차금 차감)
  *  - 부분 매칭 fallback (계정명에 차입금/사채/리스부채/대출금 포함, 단 총계/이자/할인/채권 제외)
  */
-function calcBorrowings(bsRows: FinancialRow[], year: string): number {
-  const chaipBuchae = getExact(bsRows, ["차입부채"], year);
-  if (chaipBuchae !== 0) return Math.abs(chaipBuchae);
+function calcBorrowingsMR(bsRows: FinancialRow[], year: string): MR {
+  const single = getExactMR(bsRows, ["차입부채"], year);
+  if (single.value !== 0) {
+    return {
+      value: Math.abs(single.value),
+      match: { account: single.match.account, kind: "exact", detail: "차입부채 단일 행" },
+    };
+  }
 
   const exactKw = [
     "단기차입금", "장기차입금",
@@ -165,6 +191,7 @@ function calcBorrowings(bsRows: FinancialRow[], year: string): number {
 
   let total = 0;
   const seen = new Set<string>();
+  const matchedAccounts: string[] = [];
 
   for (const kw of exactKw) {
     const kwNorm = kw.replace(/\s/g, "");
@@ -174,16 +201,16 @@ function calcBorrowings(bsRows: FinancialRow[], year: string): number {
       const v = parseNum(bsRows[i][year]);
       if (v === 0 || seen.has(kwNorm)) continue;
       let netVal = Math.abs(v);
-      // 다음 행이 할인차금이면 차감
       if (i + 1 < bsRows.length) {
         const nextNorm = normalizeAcct(bsRows[i + 1].account);
         if (nextNorm.includes("할인차금") || nextNorm.includes("사채할인발행차금")) {
           const discount = parseNum(bsRows[i + 1][year]);
-          if (discount < 0) netVal += discount; // discount<0 → 차감
+          if (discount < 0) netVal += discount;
         }
       }
       total += netVal;
       seen.add(kwNorm);
+      matchedAccounts.push(bsRows[i].account);
       break;
     }
   }
@@ -209,46 +236,91 @@ function calcBorrowings(bsRows: FinancialRow[], year: string): number {
     }
     total += netVal;
     seen.add(norm);
+    matchedAccounts.push(`${bsRows[i].account}*`); // * = 부분매칭 fallback
   }
 
-  return total;
+  if (matchedAccounts.length === 0) {
+    return { value: 0, match: NO_MATCH };
+  }
+  return {
+    value: total,
+    match: {
+      account: matchedAccounts.join("+"),
+      kind: matchedAccounts.length === 1 ? "exact" : "sum",
+      detail: matchedAccounts.length === 1 ? undefined : `${matchedAccounts.length}건 SUM`,
+    },
+  };
 }
 
 /**
- * 이자비용 추출. 우선순위:
+ * 이자비용 추출 (+ 매칭명). 우선순위:
  *   1) IS 정확매칭 "이자비용"
  *   2) CF "이자지급" / "이자납부"
  *   3) IS 부분매칭 "금융비용" / "금융원가"
  */
-function getInterestExpense(isRows: FinancialRow[], cfRows: FinancialRow[], year: string): number {
-  const isExact = getExact(isRows, ["이자비용"], year);
-  if (isExact !== 0) return Math.abs(isExact);
-  const cfHit = get(cfRows, ["이자지급", "이자납부"], year);
-  if (cfHit !== 0) return Math.abs(cfHit);
-  const finCost = get(isRows, ["금융비용", "금융원가"], year);
-  return finCost !== 0 ? Math.abs(finCost) : 0;
+function getInterestExpenseMR(isRows: FinancialRow[], cfRows: FinancialRow[], year: string): MR {
+  const isExact = getExactMR(isRows, ["이자비용"], year);
+  if (isExact.value !== 0) {
+    return { value: Math.abs(isExact.value), match: isExact.match };
+  }
+  const cfHit = getMR(cfRows, ["이자지급", "이자납부"], year);
+  if (cfHit.value !== 0) {
+    return {
+      value: Math.abs(cfHit.value),
+      match: { account: cfHit.match.account, kind: cfHit.match.kind, detail: "CF 이자지급 fallback" },
+    };
+  }
+  const finCost = getMR(isRows, ["금융비용", "금융원가"], year);
+  if (finCost.value !== 0) {
+    return {
+      value: Math.abs(finCost.value),
+      match: { account: finCost.match.account, kind: finCost.match.kind, detail: "금융비용 fallback" },
+    };
+  }
+  return { value: 0, match: NO_MATCH };
 }
 
 /**
- * 신탁업/금융업 매출 fallback.
+ * 신탁업/금융업 매출 fallback (+ 매칭명).
  * 영업수익·매출액 계정이 없는 신탁/은행/증권/캐피탈 등에서
  * "순이자이익(이자수익−이자비용) + 순수수료이익(수수료수익−수수료비용)"으로 매출 산정.
- * 재무분석 전문가 컨벤션 (한국토지신탁 PDF의 신탁업 매출 산정 방식과 동일).
  */
-function calcFinancialRevenue(isRows: FinancialRow[], year: string): number {
-  // 우선 "순이자이익" / "순수수료이익" 단일 행이 있으면 그것의 합 사용
-  const netInterest = getExact(isRows, ["순이자이익", "순이자손익"], year);
-  const netFee = getExact(isRows, ["순수수료이익", "순수수료손익"], year);
-  if (netInterest !== 0 || netFee !== 0) {
-    return netInterest + netFee;
+function calcFinancialRevenueMR(isRows: FinancialRow[], year: string): MR {
+  const netInterest = getExactMR(isRows, ["순이자이익", "순이자손익"], year);
+  const netFee = getExactMR(isRows, ["순수수료이익", "순수수료손익"], year);
+  if (netInterest.value !== 0 || netFee.value !== 0) {
+    const parts: string[] = [];
+    if (netInterest.match.account) parts.push(netInterest.match.account);
+    if (netFee.match.account) parts.push(netFee.match.account);
+    return {
+      value: netInterest.value + netFee.value,
+      match: {
+        account: parts.join("+"),
+        kind: "sum",
+        detail: "신탁/금융업: 순이자이익+순수수료이익",
+      },
+    };
   }
-  // 없으면 직접 계산 — 모두 절댓값으로 통일 (DART 비용은 절댓값으로 옴)
-  const intIncome = getExact(isRows, ["이자수익"], year);
-  const intExpense = getExact(isRows, ["이자비용"], year);
-  const feeIncome = getExact(isRows, ["수수료수익"], year);
-  const feeExpense = getExact(isRows, ["수수료비용"], year);
-  if (intIncome === 0 && feeIncome === 0) return 0;
-  return Math.abs(intIncome) - Math.abs(intExpense) + Math.abs(feeIncome) - Math.abs(feeExpense);
+  const intIncome = getExactMR(isRows, ["이자수익"], year);
+  const intExpense = getExactMR(isRows, ["이자비용"], year);
+  const feeIncome = getExactMR(isRows, ["수수료수익"], year);
+  const feeExpense = getExactMR(isRows, ["수수료비용"], year);
+  if (intIncome.value === 0 && feeIncome.value === 0) {
+    return { value: 0, match: NO_MATCH };
+  }
+  const v =
+    Math.abs(intIncome.value) - Math.abs(intExpense.value) +
+    Math.abs(feeIncome.value) - Math.abs(feeExpense.value);
+  const parts = [intIncome.match.account, intExpense.match.account, feeIncome.match.account, feeExpense.match.account]
+    .filter(Boolean);
+  return {
+    value: v,
+    match: {
+      account: parts.join("±"),
+      kind: "sum",
+      detail: "신탁/금융업: (이자수익−이자비용)+(수수료수익−수수료비용)",
+    },
+  };
 }
 
 function extractYearCells(
@@ -256,45 +328,53 @@ function extractYearCells(
   isRows: FinancialRow[],
   cfRows: FinancialRow[],
   year: string,
-): YearCells {
-  let totalAssets = get(bsRows, ["자산총계", "자산합계", "부채와자본총계", "부채및자본총계", "자본과부채총계"], year);
-  const totalLiab = get(bsRows, ["부채총계", "부채합계"], year);
-  const totalEquity = get(bsRows, ["자본총계", "자본합계"], year);
-  if (totalAssets === 0 && totalLiab !== 0 && totalEquity !== 0) {
-    totalAssets = totalLiab + totalEquity;
+): { cells: YearCells; matches: YearCellMatches } {
+  // 자산총계
+  let assetsMR = getMR(bsRows, ["자산총계", "자산합계", "부채와자본총계", "부채및자본총계", "자본과부채총계"], year);
+  const liabMR = getMR(bsRows, ["부채총계", "부채합계"], year);
+  const equityMR = getMR(bsRows, ["자본총계", "자본합계"], year);
+  if (assetsMR.value === 0 && liabMR.value !== 0 && equityMR.value !== 0) {
+    assetsMR = {
+      value: liabMR.value + equityMR.value,
+      match: { account: "부채총계+자본총계", kind: "sum", detail: "자산총계 결측 → 부채+자본 합산" },
+    };
   }
 
-  const borrowings = calcBorrowings(bsRows, year);
+  const borrowMR = calcBorrowingsMR(bsRows, year);
 
-  // 매출액 — 다단계 매칭 (재무분석 전문가 입장에서 다양한 회사별 계정명 자동 대응)
+  // 매출액 — 다단계 매칭
   const revenueKw = [
     "매출", "매출액", "수익(매출액)",
     "영업수익", "공사수익", "분양수익",
     "용역수익", "용역매출", "용역매출액",
     "상품매출", "제품매출", "건설용역매출", "서비스매출", "서비스수익",
   ];
-  // 1순위: 정확 매칭 (첫 매칭 — 일반 회사)
-  let revenue = getExact(isRows, revenueKw, year);
-  // 2순위: 부분 매칭 (제조/건설)
-  if (revenue === 0) revenue = get(isRows, ["매출액", "영업수익", "공사수익", "분양수익"], year);
-  // 3순위: 보험업
-  if (revenue === 0) revenue = get(isRows, ["보험수익", "보험료수익", "수입보험료", "보험서비스수익"], year);
-  // 4순위: 일반 금융업 합계 항목
-  if (revenue === 0) revenue = get(isRows, ["순영업수익", "순영업수익합계", "영업수익합계"], year);
-  // 5순위: 신탁업/은행/증권 — 순이자이익+순수수료이익 fallback
-  if (revenue === 0) revenue = calcFinancialRevenue(isRows, year);
-  // 6순위 (시니어 fallback): annual-report-body 파싱 다중행 케이스 — 정확매칭 max 사용
-  //   NH투자증권 [d0] 영업수익: 0.0 / 0.0 / 12 의 세 번째 행이 본 계정인 케이스
-  if (revenue === 0) revenue = getExactMax(isRows, revenueKw, year);
+  let revenueMR = getExactMR(isRows, revenueKw, year);
+  if (revenueMR.value === 0) {
+    revenueMR = getMR(isRows, ["매출액", "영업수익", "공사수익", "분양수익"], year);
+  }
+  if (revenueMR.value === 0) {
+    revenueMR = getMR(isRows, ["보험수익", "보험료수익", "수입보험료", "보험서비스수익"], year);
+  }
+  if (revenueMR.value === 0) {
+    revenueMR = getMR(isRows, ["순영업수익", "순영업수익합계", "영업수익합계"], year);
+  }
+  if (revenueMR.value === 0) {
+    revenueMR = calcFinancialRevenueMR(isRows, year);
+  }
+  if (revenueMR.value === 0) {
+    // 6순위: annual-report-body 다중행 max
+    const maxMR = getExactMaxMR(isRows, revenueKw, year);
+    if (maxMR.value !== 0) revenueMR = maxMR;
+  }
 
-  // 영업손익 — 손실 계정명일 경우 음수로 변환
+  // 영업손익
   const opProfitKw = ["영업이익", "영업이익(손실)", "영업손익"];
   const opLossKw = ["영업손실"];
-  let operatingIncome = getSignedProfit(isRows, opProfitKw, opLossKw, year);
-  // 시니어 fallback: 첫매칭 0 또는 비현실적으로 작을 때 max 사용
-  if (operatingIncome === 0) {
-    const maxOp = getExactMax(isRows, [...opProfitKw, ...opLossKw], year);
-    if (Math.abs(maxOp) > 0) operatingIncome = maxOp;
+  let opMR = getSignedProfitMR(isRows, opProfitKw, opLossKw, year);
+  if (opMR.value === 0) {
+    const maxOp = getExactMaxMR(isRows, [...opProfitKw, ...opLossKw], year);
+    if (Math.abs(maxOp.value) > 0) opMR = maxOp;
   }
 
   // 당기순손익
@@ -304,34 +384,53 @@ function extractYearCells(
     "반기순이익", "분기순이익",
   ];
   const niLossKw = ["당기순손실", "반기순손실", "분기순손실", "연결당기순손실"];
-  let netIncome = getSignedProfit(isRows, niProfitKw, niLossKw, year);
-  // 시니어 fallback: 첫매칭 0이면 max
-  if (netIncome === 0) {
-    const maxNi = getExactMax(isRows, [...niProfitKw, ...niLossKw], year);
-    if (Math.abs(maxNi) > 0) netIncome = maxNi;
+  let niMR = getSignedProfitMR(isRows, niProfitKw, niLossKw, year);
+  if (niMR.value === 0) {
+    const maxNi = getExactMaxMR(isRows, [...niProfitKw, ...niLossKw], year);
+    if (Math.abs(maxNi.value) > 0) niMR = maxNi;
   }
 
-  let interestExpense = getInterestExpense(isRows, cfRows, year);
-  // 시니어 fallback: 다중행 max
-  if (interestExpense === 0) {
-    const maxIE = Math.max(
-      getExactMax(isRows, ["이자비용"], year),
-      getExactMax(cfRows, ["이자지급", "이자납부"], year),
-    );
-    if (maxIE > 0) interestExpense = maxIE;
+  let ieMR = getInterestExpenseMR(isRows, cfRows, year);
+  if (ieMR.value === 0) {
+    const ieIs = getExactMaxMR(isRows, ["이자비용"], year);
+    const ieCf = getExactMaxMR(cfRows, ["이자지급", "이자납부"], year);
+    if (Math.abs(ieIs.value) >= Math.abs(ieCf.value) && ieIs.value !== 0) {
+      ieMR = { value: Math.abs(ieIs.value), match: { ...ieIs.match, detail: "max fallback" } };
+    } else if (ieCf.value !== 0) {
+      ieMR = { value: Math.abs(ieCf.value), match: { ...ieCf.match, detail: "CF max fallback" } };
+    }
   }
-  // 표시: 절댓값 (PDF 양식 컨벤션 — 이자비용은 양수로)
-  interestExpense = Math.abs(interestExpense);
+  // 표시: 절댓값 (PDF 양식 컨벤션)
+  const ieValue = Math.abs(ieMR.value);
 
   // 미사용 변수 경고 회피
-  void getMax;
+  void getMaxMR;
 
-  return { totalAssets, totalLiab, totalEquity, borrowings, revenue, operatingIncome, interestExpense, netIncome };
+  const cells: YearCells = {
+    totalAssets: assetsMR.value,
+    totalLiab: liabMR.value,
+    totalEquity: equityMR.value,
+    borrowings: borrowMR.value,
+    revenue: revenueMR.value,
+    operatingIncome: opMR.value,
+    interestExpense: ieValue,
+    netIncome: niMR.value,
+  };
+  const matches: YearCellMatches = {
+    totalAssets: assetsMR.match,
+    totalLiab: liabMR.match,
+    totalEquity: equityMR.match,
+    borrowings: borrowMR.match,
+    revenue: revenueMR.match,
+    operatingIncome: opMR.match,
+    interestExpense: ieMR.match,
+    netIncome: niMR.match,
+  };
+  return { cells, matches };
 }
 
 /**
  * 보고서 단위 자동 감지 + 보정.
- *
  * DART의 fnlttSinglAcntAll은 raw를 원 단위로 주는 것이 일반적이고
  * dart-api.ts:546의 toMillions로 백만원 단위 string으로 표준화된다.
  * 그러나 일부 회사(특히 금융업·증권사·Stage 3 감사보고서 fallback)는
@@ -341,8 +440,6 @@ function extractYearCells(
  * 휴리스틱:
  *   - 자산총계 최대값 < 1,000 (백만단위 = 10억원) → 사실상 활동 회사 없음
  *     → 보고서가 이미 백만/천 단위로 보고된 것으로 추정 → ×1,000,000 보정
- *   - 자산총계 1,000 ~ 999,999 (10억~1조 미만) → 정상 (작은 회사는 그대로)
- *   - 자산총계 ≥ 1,000,000 (1조 이상) → 정상 (대기업)
  */
 function detectUnitMultiplier(byYear: Record<string, YearCells>): number {
   const maxAsset = Math.max(...Object.values(byYear).map((c) => c?.totalAssets || 0));
@@ -353,18 +450,14 @@ function detectUnitMultiplier(byYear: Record<string, YearCells>): number {
 }
 
 /**
- * IS-only 단위 mismatch 감지.
- * BS는 정상(자산 정상 자릿수)인데 IS 값들이 비정상적으로 작은 경우 (쌍용건설 사례).
- * 휴리스틱: maxRevenue > 0이고 maxAsset / maxRevenue > 100,000 (자산회전율
- *           역수가 비현실적) → IS가 다른 단위로 보고된 것으로 추정 → IS만 ×1,000,000.
- * 실제 자산회전율은 일반적으로 0.1~3.0 → 역수 0.3~10. 10,000배 이상은 unrealistic.
+ * IS-only 단위 mismatch 감지 (쌍용건설 사례).
  */
 function detectIsOnlyMultiplier(byYear: Record<string, YearCells>): number {
   const cells = Object.values(byYear).filter((c): c is YearCells => !!c);
   if (cells.length === 0) return 1;
   const maxAsset = Math.max(...cells.map((c) => c.totalAssets || 0));
   const maxRevenue = Math.max(...cells.map((c) => c.revenue || 0));
-  if (maxRevenue === 0) return 1; // 매출 자체 매칭 실패는 단위 문제와 무관
+  if (maxRevenue === 0) return 1;
   if (maxAsset === 0) return 1;
   if (maxAsset / maxRevenue > 100_000) {
     return 1_000_000;
@@ -407,7 +500,7 @@ function applyIsMultiplier(byYear: Record<string, YearCells>, m: number): Record
 }
 
 /**
- * 24재무셀 추출 (3개년 × 8항목).
+ * 24재무셀 추출 (3개년 × 8항목) + 매칭 메타.
  * 부실징후점검은 차주 본인의 신용 평가가 본질이므로 **개별(OFS) 우선**.
  * 연결(CFS)은 자회사 영향으로 차입/자산이 부풀려지거나 지분법으로
  * 영업이익이 왜곡될 수 있다 (한국토지신탁 사례: 개별 영업이익 28,356 vs 연결 -20,880).
@@ -422,27 +515,27 @@ export function extract24Cells(fr: FinancialResult, years: string[]): Cells24 {
   const cfRows = useOfs ? (fr.cfItems || []) : (fr.cfItemsCfs || []);
 
   let byYear: Record<string, YearCells> = {};
+  const matches: Record<string, YearCellMatches> = {};
   for (const y of years) {
-    byYear[y] = extractYearCells(bsRows, isRows, cfRows, y);
+    const r = extractYearCells(bsRows, isRows, cfRows, y);
+    byYear[y] = r.cells;
+    matches[y] = r.matches;
   }
 
   const corpName = fr.companyInfo?.corpName || "(unknown)";
 
-  // 1단계: 전체 단위 보정 (BS/IS 모두 단위 mismatch — NH투자증권 등 금융업)
+  // 1단계: 전체 단위 보정
   const multiplier = detectUnitMultiplier(byYear);
   if (multiplier !== 1) {
-    console.log(`[extract24Cells] ${corpName} 전체 단위 보정 ×${multiplier} (자산 ${Math.max(...Object.values(byYear).map((c) => c?.totalAssets || 0))} 백만 → 보고서 단위 mismatch)`);
+    console.log(`[extract24Cells] ${corpName} 전체 단위 보정 ×${multiplier}`);
     byYear = applyMultiplier(byYear, multiplier);
   } else {
-    // 2단계: IS-only 단위 보정 (BS는 정상, IS만 mismatch — 쌍용건설 등)
     const isMultiplier = detectIsOnlyMultiplier(byYear);
     if (isMultiplier !== 1) {
-      const maxA = Math.max(...Object.values(byYear).map((c) => c?.totalAssets || 0));
-      const maxR = Math.max(...Object.values(byYear).map((c) => c?.revenue || 0));
-      console.log(`[extract24Cells] ${corpName} IS-only 단위 보정 ×${isMultiplier} (자산 ${maxA} / 매출 ${maxR} 비현실적 자릿수 차이)`);
+      console.log(`[extract24Cells] ${corpName} IS-only 단위 보정 ×${isMultiplier}`);
       byYear = applyIsMultiplier(byYear, isMultiplier);
     }
   }
 
-  return { byYear };
+  return { byYear, matches };
 }

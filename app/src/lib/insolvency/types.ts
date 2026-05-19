@@ -30,9 +30,39 @@ export interface YearCells {
   netIncome: number;         // 당기순손익
 }
 
+/**
+ * 셀별 매칭 추적 — "어떤 DART account_name에서 추출됐는가" 추적용.
+ * 사용자 피드백 ("어떤 항목으로 추출되는지 모르겠음") 대응.
+ *   - exact   : 정확 매칭 (계정명 완전 일치)
+ *   - partial : 부분 매칭 (계정명에 키워드 포함)
+ *   - sum     : 복수 행 SUM (총차입금처럼 단기+장기+사채 합산)
+ *   - fallback: 후순위 fallback (예: 이자비용 → CF 이자지급, 매출액 → 신탁 순이자이익)
+ *   - missing : 매칭 실패 (값 0)
+ */
+export type MatchKind = "exact" | "partial" | "sum" | "fallback" | "missing";
+
+export interface CellMatch {
+  account: string;  // 매칭된 account_name (SUM이면 "단기차입금+사채+리스부채" 식)
+  kind: MatchKind;
+  detail?: string;  // 추가 컨텍스트 (예: "CF 이자지급", "신탁 순이자이익+순수수료이익")
+}
+
+export interface YearCellMatches {
+  totalAssets: CellMatch;
+  totalLiab: CellMatch;
+  totalEquity: CellMatch;
+  borrowings: CellMatch;
+  revenue: CellMatch;
+  operatingIncome: CellMatch;
+  interestExpense: CellMatch;
+  netIncome: CellMatch;
+}
+
 export interface Cells24 {
   // years 순서 = [직전년도, 직전전년도, 직전전전년도] (최근 → 과거)
   byYear: Record<string, YearCells>;
+  /** 각 셀의 매칭 정보 — UI tooltip + Excel comment에 사용 */
+  matches: Record<string, YearCellMatches>;
 }
 
 export type YN = "Y" | "N" | "-";

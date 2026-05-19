@@ -1,6 +1,23 @@
 import * as ExcelJS from "exceljs";
-import type { InsolvencyRow, YearCells, WarningFlags } from "./types";
+import type { InsolvencyRow, YearCells, YearCellMatches, CellMatch, WarningFlags } from "./types";
 import { applyOverrides } from "./rules";
+
+/**
+ * CellMatch → Excel 셀 comment 문자열.
+ * 매칭 실패(missing)는 comment 생략 (노이즈 감소).
+ */
+function buildCellNote(label: string, m: CellMatch | undefined): string | null {
+  if (!m || !m.account || m.kind === "missing") return null;
+  const kindLabel =
+    m.kind === "exact" ? "정확 매칭"
+    : m.kind === "partial" ? "부분 매칭"
+    : m.kind === "sum" ? "복수 행 SUM"
+    : m.kind === "fallback" ? "후순위 fallback"
+    : m.kind;
+  const lines = [`■ ${label}`, `매칭: ${m.account}`, `종류: ${kindLabel}`];
+  if (m.detail) lines.push(`비고: ${m.detail}`);
+  return lines.join("\n");
+}
 
 const FONT_NAME = "맑은 고딕";
 
@@ -189,23 +206,27 @@ export async function buildInsolvencyWorkbook(
     cellB.value = fmtDate(row.estDt);
     cellB.alignment = { vertical: "middle", horizontal: "center" };
 
-    // C~Z: 24 재무셀 (백만단위)
+    // C~Z: 24 재무셀 (백만단위) + 매칭 account_name comment
     const yearCells: YearCells[] = row.years.map((y) =>
       row.cells.byYear[y] || ({} as YearCells),
     );
+    const yearMatches: (YearCellMatches | undefined)[] = row.years.map((y) =>
+      row.cells.matches?.[y],
+    );
+    const fieldKeys: (keyof YearCells)[] = [
+      "totalAssets", "totalLiab", "totalEquity", "borrowings",
+      "revenue", "operatingIncome", "interestExpense", "netIncome",
+    ];
+    const fieldLabels = [
+      "자산총계", "부채총계", "자본총계", "차입금",
+      "매출액", "영업손익", "이자비용", "당기순손익",
+    ];
     yearCells.forEach((yc, gi) => {
       const baseCol = 3 + gi * 8;
-      const vals = [
-        yc.totalAssets,
-        yc.totalLiab,
-        yc.totalEquity,
-        yc.borrowings,
-        yc.revenue,
-        yc.operatingIncome,
-        yc.interestExpense,
-        yc.netIncome,
-      ];
-      vals.forEach((v, i) => {
+      const ym = yearMatches[gi];
+      const year = row.years[gi];
+      fieldKeys.forEach((key, i) => {
+        const v = yc[key];
         const c = r.getCell(baseCol + i);
         if (v === undefined || v === null || isNaN(v)) {
           c.value = "-";
@@ -214,6 +235,18 @@ export async function buildInsolvencyWorkbook(
           c.numFmt = "#,##0;(#,##0);-";
         }
         c.alignment = { vertical: "middle", horizontal: "right" };
+
+        // 매칭 메타 → 셀 메모 (hover 시 노출)
+        const m = ym ? ym[key as keyof YearCellMatches] : undefined;
+        const note = buildCellNote(`${year} ${fieldLabels[i]}`, m);
+        if (note) {
+          c.note = {
+            texts: [{ font: { name: FONT_NAME, size: 9 }, text: note }],
+            margins: { insetmode: "auto" },
+            protection: { locked: "True", lockText: "False" },
+            editAs: "twoCells",
+          };
+        }
       });
     });
 
@@ -335,6 +368,102 @@ export async function buildInsolvencyWorkbook(
     }
     drow += 1; // gap
   });
+
+  // ─── 보조 시트: 재무매칭상세 ───
+  // 차주 × 연도 × 8항목 → 매칭된 DART account_name 표
+  const matchSheet = wb.addWorksheet("재무매칭상세", { views: [{ showGridLines: true }] });
+  matchSheet.getColumn(1).width = 22;
+  matchSheet.getColumn(2).width = 10;
+  matchSheet.getColumn(3).width = 14;
+  matchSheet.getColumn(4).width = 40;
+  matchSheet.getColumn(5).width = 14;
+  matchSheet.getColumn(6).width = 18;
+  matchSheet.getColumn(7).width = 30;
+
+  // 시트 제목
+  matchSheet.mergeCells("A1:G1");
+  const mTitle = matchSheet.getCell("A1");
+  mTitle.value = "■ 재무 추출 매칭 상세 — 각 셀이 DART 어떤 계정에서 추출됐는지";
+  mTitle.font = { name: FONT_NAME, size: 13, bold: true };
+  matchSheet.getRow(1).height = 26;
+
+  // 헤더
+  const mHeader = matchSheet.getRow(3);
+  const headers = ["차주", "연도", "항목", "매칭 account_name", "매칭 종류", "값 (백만원)", "비고"];
+  headers.forEach((h, i) => {
+    const c = mHeader.getCell(i + 1);
+    c.value = h;
+    c.font = { name: FONT_NAME, size: 10, bold: true };
+    c.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+    c.fill = HEADER_FILL;
+    c.border = THIN;
+  });
+  mHeader.height = 22;
+
+  // 종류별 색상 강조 — partial/fallback는 검토 필요 신호
+  const KIND_LABEL: Record<string, string> = {
+    exact: "정확",
+    partial: "부분",
+    sum: "SUM",
+    fallback: "후순위",
+    missing: "실패",
+  };
+  const KIND_FILL: Record<string, ExcelJS.Fill | undefined> = {
+    exact: undefined,
+    partial: { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } },
+    sum: { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2EFDA" } },
+    fallback: { type: "pattern", pattern: "solid", fgColor: { argb: "FFFCE4D6" } },
+    missing: { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } },
+  };
+
+  let mrow = 4;
+  const fieldKeysOrdered: Array<keyof YearCellMatches> = [
+    "totalAssets", "totalLiab", "totalEquity", "borrowings",
+    "revenue", "operatingIncome", "interestExpense", "netIncome",
+  ];
+  const fieldLabelsOrdered = [
+    "자산총계", "부채총계", "자본총계", "차입금",
+    "매출액", "영업손익", "이자비용", "당기순손익",
+  ];
+
+  rows.forEach((row) => {
+    row.years.forEach((y) => {
+      const yc = row.cells.byYear[y];
+      const ym = row.cells.matches?.[y];
+      if (!yc || !ym) return;
+      fieldKeysOrdered.forEach((k, i) => {
+        const m = ym[k];
+        const v = yc[k as keyof YearCells];
+        const r = matchSheet.getRow(mrow);
+        r.getCell(1).value = row.corpName;
+        r.getCell(2).value = y;
+        r.getCell(3).value = fieldLabelsOrdered[i];
+        r.getCell(4).value = m?.account || "(매칭 실패)";
+        r.getCell(5).value = KIND_LABEL[m?.kind || "missing"] || "-";
+        r.getCell(6).value = v === undefined || isNaN(v as number) ? "-" : toMillions(v as number);
+        r.getCell(6).numFmt = "#,##0;(#,##0);-";
+        r.getCell(7).value = m?.detail || "";
+        const fill = KIND_FILL[m?.kind || "missing"];
+        for (let col = 1; col <= 7; col++) {
+          const c = r.getCell(col);
+          c.border = THIN;
+          c.font = { name: FONT_NAME, size: 9 };
+          c.alignment = {
+            vertical: "middle",
+            horizontal: col === 6 ? "right" : col === 4 || col === 7 ? "left" : "center",
+            wrapText: true,
+          };
+          if (fill && col === 5) c.fill = fill;
+        }
+        mrow += 1;
+      });
+      // 차주-연도 그룹 사이 빈 줄
+      mrow += 0;
+    });
+    mrow += 1; // 차주 사이 gap
+  });
+
+  matchSheet.views = [{ state: "frozen", ySplit: 3, showGridLines: true }];
 
   const buffer = await wb.xlsx.writeBuffer();
   return Buffer.from(buffer);
