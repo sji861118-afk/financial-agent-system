@@ -69,6 +69,34 @@ function getExact(rows: FinancialRow[], keywords: string[], year: string): numbe
 }
 
 /**
+ * 부호 처리 매칭. DART의 계정명 컨벤션:
+ *   - "영업이익" / "당기순이익" / "영업이익(손실)" / "당기순이익(손실)" 통합 계정 → raw 값의 부호 그대로 사용
+ *   - "영업손실" / "당기순손실" / "분기순손실" / "반기순손실" 등 손실 단독 계정 → raw가 절댓값(양수)으로 옴 → 음수로 변환
+ *
+ * 호출 측: profitKeywords(통합·이익)와 lossKeywords(손실 단독)를 분리해서 전달.
+ * 우진물산처럼 영업손실/순손실 계정으로만 표기되는 회사에서 부호 오류 방지.
+ */
+function getSignedProfit(
+  rows: FinancialRow[],
+  profitKeywords: string[],
+  lossKeywords: string[],
+  year: string,
+): number {
+  // 1순위: 손실 계정명 정확 매칭 → -|v|
+  for (const r of rows) {
+    const norm = normalizeAcct(r.account);
+    for (const kw of lossKeywords) {
+      if (norm === kw.replace(/\s/g, "")) {
+        const v = parseNum(r[year]);
+        if (v !== 0) return -Math.abs(v);
+      }
+    }
+  }
+  // 2순위: 이익(통합 포함) 계정명 → raw 부호 그대로 (DART가 이미 음수면 음수)
+  return get(rows, profitKeywords, year);
+}
+
+/**
  * 총차입금 계산. dart-api.ts:735-810 룰 압축 복제.
  *  - "차입부채" 단일 행이 있으면 그것을 사용
  *  - 없으면 단기/장기 차입금·사채·리스부채·대출금 SUM (할인차금 차감)
@@ -160,6 +188,28 @@ function getInterestExpense(isRows: FinancialRow[], cfRows: FinancialRow[], year
   return finCost !== 0 ? Math.abs(finCost) : 0;
 }
 
+/**
+ * 신탁업/금융업 매출 fallback.
+ * 영업수익·매출액 계정이 없는 신탁/은행/증권/캐피탈 등에서
+ * "순이자이익(이자수익−이자비용) + 순수수료이익(수수료수익−수수료비용)"으로 매출 산정.
+ * 재무분석 전문가 컨벤션 (한국토지신탁 PDF의 신탁업 매출 산정 방식과 동일).
+ */
+function calcFinancialRevenue(isRows: FinancialRow[], year: string): number {
+  // 우선 "순이자이익" / "순수수료이익" 단일 행이 있으면 그것의 합 사용
+  const netInterest = getExact(isRows, ["순이자이익", "순이자손익"], year);
+  const netFee = getExact(isRows, ["순수수료이익", "순수수료손익"], year);
+  if (netInterest !== 0 || netFee !== 0) {
+    return netInterest + netFee;
+  }
+  // 없으면 직접 계산 — 모두 절댓값으로 통일 (DART 비용은 절댓값으로 옴)
+  const intIncome = getExact(isRows, ["이자수익"], year);
+  const intExpense = getExact(isRows, ["이자비용"], year);
+  const feeIncome = getExact(isRows, ["수수료수익"], year);
+  const feeExpense = getExact(isRows, ["수수료비용"], year);
+  if (intIncome === 0 && feeIncome === 0) return 0;
+  return Math.abs(intIncome) - Math.abs(intExpense) + Math.abs(feeIncome) - Math.abs(feeExpense);
+}
+
 function extractYearCells(
   bsRows: FinancialRow[],
   isRows: FinancialRow[],
@@ -175,25 +225,31 @@ function extractYearCells(
 
   const borrowings = calcBorrowings(bsRows, year);
 
-  // 매출액 (제조/건설/보험/금융 다종 keyword)
+  // 매출액 — 다단계 매칭
   let revenue = getExact(isRows, ["매출", "매출액", "영업수익", "공사수익", "분양수익"], year);
   if (revenue === 0) revenue = get(isRows, ["매출액", "영업수익", "공사수익", "분양수익"], year);
   if (revenue === 0) revenue = get(isRows, ["보험수익", "보험료수익", "수입보험료", "보험서비스수익"], year);
-  if (revenue === 0) revenue = get(isRows, ["순영업수익", "순영업수익합계", "영업수익합계", "이자수익합계", "순이자손익"], year);
+  if (revenue === 0) revenue = get(isRows, ["순영업수익", "순영업수익합계", "영업수익합계"], year);
+  // 신탁업/은행/증권 fallback — 순이자이익 + 순수수료이익
+  if (revenue === 0) revenue = calcFinancialRevenue(isRows, year);
 
-  const operatingIncome = get(
+  // 영업손익 — 손실 계정명일 경우 음수로 변환
+  const operatingIncome = getSignedProfit(
     isRows,
-    ["영업이익", "영업이익(손실)", "영업손익", "영업손실"],
+    ["영업이익", "영업이익(손실)", "영업손익"],
+    ["영업손실"],
     year,
   );
 
-  const netIncome = get(
+  // 당기순손익 — 손실 계정명일 경우 음수로 변환
+  const netIncome = getSignedProfit(
     isRows,
     [
-      "당기순이익", "당기순이익(손실)", "당기순손익", "당기순손실",
+      "당기순이익", "당기순이익(손실)", "당기순손익",
       "연결당기순이익", "연결당기순손익",
-      "반기순이익", "반기순손실", "분기순이익", "분기순손실",
+      "반기순이익", "분기순이익",
     ],
+    ["당기순손실", "반기순손실", "분기순손실", "연결당기순손실"],
     year,
   );
 
@@ -204,13 +260,16 @@ function extractYearCells(
 
 /**
  * 24재무셀 추출 (3개년 × 8항목).
- * 연결(CFS) 데이터 우선, 없으면 개별(OFS).
+ * 부실징후점검은 차주 본인의 신용 평가가 본질이므로 **개별(OFS) 우선**.
+ * 연결(CFS)은 자회사 영향으로 차입/자산이 부풀려지거나 지분법으로
+ * 영업이익이 왜곡될 수 있다 (한국토지신탁 사례: 개별 영업이익 28,356 vs 연결 -20,880).
+ * 개별 데이터가 없는 경우(예: 일부 SPC)에만 연결 사용.
  */
 export function extract24Cells(fr: FinancialResult, years: string[]): Cells24 {
-  const useCfs = fr.hasCfs && fr.bsItemsCfs.length > 0;
-  const bsRows = useCfs ? fr.bsItemsCfs : fr.bsItems;
-  const isRows = useCfs ? fr.isItemsCfs : fr.isItems;
-  const cfRows = useCfs ? (fr.cfItemsCfs || []) : (fr.cfItems || []);
+  const useOfs = fr.hasOfs && fr.bsItems.length > 0;
+  const bsRows = useOfs ? fr.bsItems : fr.bsItemsCfs;
+  const isRows = useOfs ? fr.isItems : fr.isItemsCfs;
+  const cfRows = useOfs ? (fr.cfItems || []) : (fr.cfItemsCfs || []);
 
   const byYear: Record<string, YearCells> = {};
   for (const y of years) {

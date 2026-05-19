@@ -73,6 +73,29 @@ for (const y of years) {
   );
 }
 
+// 4.5) IS rows raw dump (도메인 매칭 확인용)
+const FULL_DUMP = process.argv.includes("--full");
+if (FULL_DUMP) {
+  console.log(`\n--- IS rows (개별) ---`);
+  for (const r of fin.isItems || []) {
+    console.log(`  [d${r.depth ?? 0}] ${r.account}: ${years.map((y: string) => r[y]).join(" / ")}`);
+  }
+  if (fin.isItemsCfs?.length) {
+    console.log(`\n--- IS rows (연결) ---`);
+    for (const r of fin.isItemsCfs) {
+      console.log(`  [d${r.depth ?? 0}] ${r.account}: ${years.map((y: string) => r[y]).join(" / ")}`);
+    }
+  }
+  console.log(`\n--- BS rows 일부 (자본/부채/차입) ---`);
+  const bsRows = fin.bsItems || [];
+  for (const r of bsRows) {
+    const nm = r.account || "";
+    if (/자본|부채|차입|사채|리스/.test(nm)) {
+      console.log(`  [d${r.depth ?? 0}] ${nm}: ${years.map((y: string) => r[y]).join(" / ")}`);
+    }
+  }
+}
+
 // 5) fetchAuditOpinion
 console.log(`\n--- fetchAuditOpinion ---`);
 const t1 = Date.now();
