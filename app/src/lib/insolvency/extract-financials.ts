@@ -225,12 +225,25 @@ function extractYearCells(
 
   const borrowings = calcBorrowings(bsRows, year);
 
-  // 매출액 — 다단계 매칭
-  let revenue = getExact(isRows, ["매출", "매출액", "영업수익", "공사수익", "분양수익"], year);
+  // 매출액 — 다단계 매칭 (재무분석 전문가 입장에서 다양한 회사별 계정명 자동 대응)
+  // 1순위: 정확 매칭 — "매출"(쌍용건설), "매출액", "영업수익", "수익(매출액)" 등 회사별 통합 계정
+  let revenue = getExact(
+    isRows,
+    [
+      "매출", "매출액", "수익(매출액)",
+      "영업수익", "공사수익", "분양수익",
+      "용역수익", "용역매출", "용역매출액",
+      "상품매출", "제품매출", "건설용역매출", "서비스매출", "서비스수익",
+    ],
+    year,
+  );
+  // 2순위: 부분 매칭 (단, "매출원가/매출채권/매출총이익" 등 자식 항목 회피)
   if (revenue === 0) revenue = get(isRows, ["매출액", "영업수익", "공사수익", "분양수익"], year);
+  // 3순위: 보험업
   if (revenue === 0) revenue = get(isRows, ["보험수익", "보험료수익", "수입보험료", "보험서비스수익"], year);
+  // 4순위: 일반 금융업 합계 항목
   if (revenue === 0) revenue = get(isRows, ["순영업수익", "순영업수익합계", "영업수익합계"], year);
-  // 신탁업/은행/증권 fallback — 순이자이익 + 순수수료이익
+  // 5순위: 신탁업/은행/증권 — 순이자이익+순수수료이익 fallback
   if (revenue === 0) revenue = calcFinancialRevenue(isRows, year);
 
   // 영업손익 — 손실 계정명일 경우 음수로 변환
@@ -259,11 +272,90 @@ function extractYearCells(
 }
 
 /**
+ * 보고서 단위 자동 감지 + 보정.
+ *
+ * DART의 fnlttSinglAcntAll은 raw를 원 단위로 주는 것이 일반적이고
+ * dart-api.ts:546의 toMillions로 백만원 단위 string으로 표준화된다.
+ * 그러나 일부 회사(특히 금융업·증권사·Stage 3 감사보고서 fallback)는
+ * raw 자체가 이미 백만원/천원 단위로 보고되어 toMillions가 추가로 나누면
+ * 비현실적으로 작은 값이 된다 (예: NH투자증권 자산 63 백만 → 실제 59조원).
+ *
+ * 휴리스틱:
+ *   - 자산총계 최대값 < 1,000 (백만단위 = 10억원) → 사실상 활동 회사 없음
+ *     → 보고서가 이미 백만/천 단위로 보고된 것으로 추정 → ×1,000,000 보정
+ *   - 자산총계 1,000 ~ 999,999 (10억~1조 미만) → 정상 (작은 회사는 그대로)
+ *   - 자산총계 ≥ 1,000,000 (1조 이상) → 정상 (대기업)
+ */
+function detectUnitMultiplier(byYear: Record<string, YearCells>): number {
+  const maxAsset = Math.max(...Object.values(byYear).map((c) => c?.totalAssets || 0));
+  if (maxAsset > 0 && maxAsset < 1_000) {
+    return 1_000_000;
+  }
+  return 1;
+}
+
+/**
+ * IS-only 단위 mismatch 감지.
+ * BS는 정상(자산 정상 자릿수)인데 IS 값들이 비정상적으로 작은 경우 (쌍용건설 사례).
+ * 휴리스틱: maxRevenue > 0이고 maxAsset / maxRevenue > 100,000 (자산회전율
+ *           역수가 비현실적) → IS가 다른 단위로 보고된 것으로 추정 → IS만 ×1,000,000.
+ * 실제 자산회전율은 일반적으로 0.1~3.0 → 역수 0.3~10. 10,000배 이상은 unrealistic.
+ */
+function detectIsOnlyMultiplier(byYear: Record<string, YearCells>): number {
+  const cells = Object.values(byYear).filter((c): c is YearCells => !!c);
+  if (cells.length === 0) return 1;
+  const maxAsset = Math.max(...cells.map((c) => c.totalAssets || 0));
+  const maxRevenue = Math.max(...cells.map((c) => c.revenue || 0));
+  if (maxRevenue === 0) return 1; // 매출 자체 매칭 실패는 단위 문제와 무관
+  if (maxAsset === 0) return 1;
+  if (maxAsset / maxRevenue > 100_000) {
+    return 1_000_000;
+  }
+  return 1;
+}
+
+function applyMultiplier(byYear: Record<string, YearCells>, m: number): Record<string, YearCells> {
+  if (m === 1) return byYear;
+  const out: Record<string, YearCells> = {};
+  for (const [y, c] of Object.entries(byYear)) {
+    out[y] = {
+      totalAssets: c.totalAssets * m,
+      totalLiab: c.totalLiab * m,
+      totalEquity: c.totalEquity * m,
+      borrowings: c.borrowings * m,
+      revenue: c.revenue * m,
+      operatingIncome: c.operatingIncome * m,
+      interestExpense: c.interestExpense * m,
+      netIncome: c.netIncome * m,
+    };
+  }
+  return out;
+}
+
+/** IS 항목(매출/영업/이자/순익)에만 multiplier 적용 — BS는 보존 */
+function applyIsMultiplier(byYear: Record<string, YearCells>, m: number): Record<string, YearCells> {
+  if (m === 1) return byYear;
+  const out: Record<string, YearCells> = {};
+  for (const [y, c] of Object.entries(byYear)) {
+    out[y] = {
+      ...c,
+      revenue: c.revenue * m,
+      operatingIncome: c.operatingIncome * m,
+      interestExpense: c.interestExpense * m,
+      netIncome: c.netIncome * m,
+    };
+  }
+  return out;
+}
+
+/**
  * 24재무셀 추출 (3개년 × 8항목).
  * 부실징후점검은 차주 본인의 신용 평가가 본질이므로 **개별(OFS) 우선**.
  * 연결(CFS)은 자회사 영향으로 차입/자산이 부풀려지거나 지분법으로
  * 영업이익이 왜곡될 수 있다 (한국토지신탁 사례: 개별 영업이익 28,356 vs 연결 -20,880).
  * 개별 데이터가 없는 경우(예: 일부 SPC)에만 연결 사용.
+ *
+ * 마지막에 단위 자동 감지 + 보정 적용 (NH투자증권 등 백만단위 보고 회사 대응).
  */
 export function extract24Cells(fr: FinancialResult, years: string[]): Cells24 {
   const useOfs = fr.hasOfs && fr.bsItems.length > 0;
@@ -271,9 +363,28 @@ export function extract24Cells(fr: FinancialResult, years: string[]): Cells24 {
   const isRows = useOfs ? fr.isItems : fr.isItemsCfs;
   const cfRows = useOfs ? (fr.cfItems || []) : (fr.cfItemsCfs || []);
 
-  const byYear: Record<string, YearCells> = {};
+  let byYear: Record<string, YearCells> = {};
   for (const y of years) {
     byYear[y] = extractYearCells(bsRows, isRows, cfRows, y);
   }
+
+  const corpName = fr.companyInfo?.corpName || "(unknown)";
+
+  // 1단계: 전체 단위 보정 (BS/IS 모두 단위 mismatch — NH투자증권 등 금융업)
+  const multiplier = detectUnitMultiplier(byYear);
+  if (multiplier !== 1) {
+    console.log(`[extract24Cells] ${corpName} 전체 단위 보정 ×${multiplier} (자산 ${Math.max(...Object.values(byYear).map((c) => c?.totalAssets || 0))} 백만 → 보고서 단위 mismatch)`);
+    byYear = applyMultiplier(byYear, multiplier);
+  } else {
+    // 2단계: IS-only 단위 보정 (BS는 정상, IS만 mismatch — 쌍용건설 등)
+    const isMultiplier = detectIsOnlyMultiplier(byYear);
+    if (isMultiplier !== 1) {
+      const maxA = Math.max(...Object.values(byYear).map((c) => c?.totalAssets || 0));
+      const maxR = Math.max(...Object.values(byYear).map((c) => c?.revenue || 0));
+      console.log(`[extract24Cells] ${corpName} IS-only 단위 보정 ×${isMultiplier} (자산 ${maxA} / 매출 ${maxR} 비현실적 자릿수 차이)`);
+      byYear = applyIsMultiplier(byYear, isMultiplier);
+    }
+  }
+
   return { byYear };
 }
