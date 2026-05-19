@@ -188,6 +188,9 @@ export interface FinancialRow {
   account: string;
   depth?: number; // 0=총계, 1=중분류, 2=세부항목
   noteRef?: string; // 감사보고서 주석번호 (예: "5", "12,18")
+  // DART IFRS Taxonomy account_id (예: "ifrs-full_InterestPaidClassifiedAsOperatingActivities").
+  // calcRatios에서 영업활동 이자지급 등을 정확히 매칭하기 위해 사용. placeholder ID는 미기록.
+  accountId?: string;
   [year: string]: string | number | undefined;
 }
 
@@ -475,7 +478,8 @@ function buildStatements(
 
   // 계정 순서 + depth 추론 — DART ord 순서 그대로 보존 (최신 보고서 우선)
   // unique key = account_id || nm (CJ대한통운 BS 동명이항목 처리)
-  const accountOrder: { nm: string; depth: number; key: string }[] = [];
+  // accountId는 IFRS Taxonomy ID 보존 (calcRatios에서 영업활동 이자지급 등 정확 매칭용)
+  const accountOrder: { nm: string; depth: number; key: string; accountId?: string }[] = [];
   const seen = new Set<string>();
   for (const reportYear of Object.keys(rawByYear).sort().reverse()) {
     const raw = rawByYear[reportYear] || [];
@@ -491,7 +495,7 @@ function buildStatements(
       const key = isUniqueId ? id : nm;
       if (!seen.has(key)) {
         seen.add(key);
-        accountOrder.push({ nm, depth: detectAccountDepth(nm, sjFilter), key });
+        accountOrder.push({ nm, depth: detectAccountDepth(nm, sjFilter), key, accountId: isUniqueId ? id : undefined });
       }
     }
     if (accountOrder.length) break;
@@ -509,6 +513,7 @@ function buildStatements(
   if (isBS && accountOrder.length > 0) {
     const stdRows: FinancialRow[] = accountOrder.map(item => {
       const r: FinancialRow = { account: item.nm, depth: item.depth };
+      if (item.accountId) r.accountId = item.accountId;
       for (const y of displayYears) {
         if (yearData[y] && yearData[y][item.nm]) r[y] = yearData[y][item.nm];
       }
@@ -530,8 +535,9 @@ function buildStatements(
   refineDepthBySumDetection(accountOrder, yearData, displayYears);
 
   const rows: FinancialRow[] = [];
-  for (const { nm: acct, depth, key } of accountOrder) {
+  for (const { nm: acct, depth, key, accountId } of accountOrder) {
     const row: FinancialRow = { account: acct, depth };
+    if (accountId) row.accountId = accountId;
     const matchKey = normalizeForMatch(acct);
     for (const year of displayYears) {
       const vals = yearData[year] || {};
@@ -604,6 +610,18 @@ function calcRatios(
           const v = parseNum(r[year] || "-");
           if (v !== 0) return v;
         }
+      }
+    }
+    return 0;
+  }
+
+  // IFRS Taxonomy account_id 패턴 매칭. K-IFRS 회사의 영업활동 이자지급 등을 정확히 잡기 위해 사용.
+  // (예: ifrs-full_InterestPaidClassifiedAsOperatingActivities, dart_InterestPaidClassifiedAsOperatingActivities)
+  function getByAccountId(rows: FinancialRow[], pattern: RegExp, year: string): number {
+    for (const r of rows) {
+      if (r.accountId && pattern.test(r.accountId)) {
+        const v = parseNum(String(r[year] ?? "-"));
+        if (v !== 0) return v;
       }
     }
     return 0;
@@ -854,13 +872,22 @@ function calcRatios(
       }
     }
 
-    // 이자비용 (EBITDA/이자비율용) — 우선순위 (롯데건설 검증보고 P0-2 반영):
+    // 이자비용 (EBITDA/이자비율용) — 우선순위 (2026-05-19 CF 영업활동 섹션 식별 fix):
     //  1) IS의 정확한 "이자비용" 행 (가장 정확, 발생주의)
-    //  2) IS의 "금융비용/금융원가" — 회사 전체 차입 이자비용 통합값
-    //  3) CF의 실제 이자지급액 — 신종자본증권 이자(재무활동)만 부분 매핑되는 회사 있어 후순위
-    //     (롯데건설: CF 이자지급 5,075만 = 신종자본증권 이자, 실제 금융원가 43,725와 불일치)
-    //  *효성중공업 케이스(IS 금융비용에 외환손실 포함되어 과대평가)는 CF 영업활동 섹션 식별로 별도 후속.
+    //  2) CF account_id가 InterestPaidClassifiedAsOperatingActivities — IFRS Taxonomy로
+    //     영업활동 섹션의 cash interest 정확 매칭. eaf7d91이 P1으로 미룬 핵심.
+    //     · 효성중공업 2026.03: 6,313 백만 (영업이익 111,510 / 6,313 = 17.7배 ✓ baseline 일치)
+    //     · 롯데건설 2026.03: 23,813 백만 (이전 substring 매칭은 "신종자본증권 이자지급" 5,075를 잘못 hit)
+    //     · 신종자본증권 이자지급은 account_id=dart_InterestPaidToHybridBond → 패턴 미스매칭 (정상)
+    //  3) IS의 "금융비용/금융원가" — accrual 기준 통합값. CF 영업활동 데이터 없을 때 fallback.
+    //     단, 외환손실/파생손실 포함된 회사는 inflated → 신용분석 시 주의 (효성/삼성 케이스)
+    //  4) CF generic "이자지급/이자납부" name 매칭 — K-GAAP 회사 fallback (IFRS account_id 없음)
     let interestExpense = Math.abs(getExact(isRows, ["이자비용", "이자비용(손실)"], year));
+    if (interestExpense === 0 && cfRows.length > 0) {
+      interestExpense = Math.abs(
+        getByAccountId(cfRows, /InterestPaid.*?OperatingActivit/i, year)
+      );
+    }
     if (interestExpense === 0) {
       interestExpense = Math.abs(get(isRows, ["금융비용", "금융원가"], year));
     }

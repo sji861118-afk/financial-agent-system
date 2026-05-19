@@ -1448,13 +1448,20 @@ function createFinancialSheet(
         s.name.includes("현금흐름표") && s.name.includes(fsDiv === "OFS" ? "개별" : "연결")
       )?.name;
       let cfDeprRow = 0, cfAmortRow = 0, cfInterestPayRow = 0, cfCombinedDARow = 0;
+      // CF 영업활동 이자지급 행 (IFRS account_id 기반 — 신종자본증권 등 재무활동 항목 배제)
+      let cfInterestOpRow = 0;
       if (cfData && cfData.length > 0) {
         for (let i = 0; i < cfData.length; i++) {
           const acctRaw = String(cfData[i].account || "");
+          const acctId = String((cfData[i] as { accountId?: string }).accountId || "");
           const v = acctRaw.replace(/\s/g, "");
           const rn = i + 3; // CF 시트의 데이터 행 번호 (title=1, header=2, items=3+)
           // (참고) 행은 정보용 — EBITDA 합산에서 제외
           if (/\(참고\)/.test(acctRaw)) continue;
+          // 영업활동 이자지급 — IFRS Taxonomy account_id 매칭 (가장 정확)
+          if (!cfInterestOpRow && /InterestPaid.*?OperatingActivit/i.test(acctId)) {
+            cfInterestOpRow = rn;
+          }
           // 통합 라벨 우선 — 잡히면 cfCombinedDARow에 기록 (감가/무형 별도 행 매칭은 skip)
           if (!cfCombinedDARow && /감가상각비(및|와)무형자산상각비/.test(v)) {
             cfCombinedDARow = rn;
@@ -1462,7 +1469,8 @@ function createFinancialSheet(
           }
           if (!cfDeprRow && (v.includes("감가상각비") || v.includes("유형자산감가상각비"))) cfDeprRow = rn;
           if (!cfAmortRow && (v.includes("무형자산상각비") || v.includes("사용권자산상각비"))) cfAmortRow = rn;
-          if (!cfInterestPayRow &&
+          // K-GAAP fallback (account_id 없을 때만) — 신종자본증권 이자지급은 ID 매칭에서 제외됐으므로 endsWith 사용 가능
+          if (!cfInterestPayRow && !cfInterestOpRow &&
               (v === "이자지급" || v === "이자납부" || v === "이자의지급" || v.endsWith("이자지급") || v.endsWith("이자납부"))) {
             cfInterestPayRow = rn;
           }
@@ -1480,11 +1488,15 @@ function createFinancialSheet(
       const rDeprIS = findRow("감가상각비", "감가상각비용");
       const rAmortIS = findRow("무형자산상각비", "무형자산감가상각비", "사용권자산상각비");
 
-      // 이자비용 셀 참조 빌더 (롯데건설 검증보고 P0-2 반영):
-      // 우선순위: IS "이자비용" > IS "금융비용/금융원가" > CF "이자지급/이자납부"
-      // (CF 이자지급은 신종자본증권 이자만 부분 매핑되는 회사 있어 후순위로 변경)
+      // 이자비용 셀 참조 빌더 (2026-05-19 CF 영업활동 섹션 식별 fix):
+      // 우선순위:
+      //  1) IS "이자비용" (정확매칭)
+      //  2) CF 영업활동 이자지급 — IFRS account_id 기반 (신종자본증권 등 재무활동 배제 ✓)
+      //  3) IS "금융비용/금융원가" — accrual 통합값 (외환손실 inflated 회사는 주의)
+      //  4) CF generic 이자지급 — K-GAAP fallback
       function interestRef(c: string): string | null {
         if (rInterestExact) return `${c}${rInterestExact}`;
+        if (cfInterestOpRow) return `${cfRef}${c}${cfInterestOpRow}`;
         if (rFinCost) return `${c}${rFinCost}`;
         if (cfInterestPayRow) return `${cfRef}${c}${cfInterestPayRow}`;
         return null;
@@ -1568,8 +1580,8 @@ function createFinancialSheet(
         "총자산이익률(ROA) = (당기순이익 / 자산총계) × 100",
         "자기자본이익률(ROE) = (당기순이익 / 자본총계) × 100",
         "EBITDA = 영업이익 + 감가상각비(CF) + 무형자산상각비(CF)",
-        "EBITDA/이자비용 = EBITDA / 이자비용  (IS 이자비용 > CF 이자지급 > IS 금융비용)",
-        "이자보상배율 = 영업이익 / 이자비용  (IS 이자비용 > CF 이자지급 > IS 금융비용)",
+        "EBITDA/이자비용 = EBITDA / 이자비용  (IS 이자비용 > CF 영업활동 이자지급 > IS 금융비용 > CF 이자지급)",
+        "이자보상배율 = 영업이익 / 이자비용  (IS 이자비용 > CF 영업활동 이자지급 > IS 금융비용 > CF 이자지급)",
         "매출증가율 = ((당기매출액 - 전기매출액) / |전기매출액|) × 100",
       ];
       for (const f of isFormulas) {
