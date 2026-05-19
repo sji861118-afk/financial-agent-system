@@ -181,9 +181,13 @@ export async function buildInsolvencyWorkbook(
     const merged = applyOverrides(row.flags, row.flagOverrides);
 
     // A: 고객명
-    r.getCell(1).value = row.corpName || row.inputName;
+    const cellA = r.getCell(1);
+    cellA.value = row.corpName || row.inputName;
+    cellA.alignment = { vertical: "middle", horizontal: "left" };
     // B: 설립일
-    r.getCell(2).value = fmtDate(row.estDt);
+    const cellB = r.getCell(2);
+    cellB.value = fmtDate(row.estDt);
+    cellB.alignment = { vertical: "middle", horizontal: "center" };
 
     // C~Z: 24 재무셀 (백만단위)
     const yearCells: YearCells[] = row.years.map((y) =>
@@ -209,6 +213,7 @@ export async function buildInsolvencyWorkbook(
           c.value = toMillions(v);
           c.numFmt = "#,##0;(#,##0);-";
         }
+        c.alignment = { vertical: "middle", horizontal: "right" };
       });
     });
 
@@ -241,15 +246,19 @@ export async function buildInsolvencyWorkbook(
     ].filter(Boolean).join("\n");
     const aiCell = r.getCell(35);
     aiCell.value = evidStr;
-    aiCell.alignment = { vertical: "top", horizontal: "left", wrapText: true };
+    aiCell.alignment = { vertical: "middle", horizontal: "left", wrapText: true };
     aiCell.font = { name: FONT_NAME, size: 8, color: { argb: "FF606060" } };
 
-    // 행 전체 폰트/테두리
+    // 행 전체 폰트/테두리 + 세로 가운데 정렬 default 보강 (vertical 미설정 셀 대비)
     for (let col = 1; col <= 35; col++) {
       const c = r.getCell(col);
       c.border = THIN;
       if (!c.font) c.font = { name: FONT_NAME, size: 10 };
       else c.font = { ...c.font, name: FONT_NAME };
+      // alignment가 위에서 명시되지 않은 셀에만 middle 보강
+      if (!c.alignment || !c.alignment.vertical) {
+        c.alignment = { ...(c.alignment || {}), vertical: "middle" };
+      }
     }
     r.height = Math.max(28, Math.ceil(evidStr.length / 60) * 14 + 10);
   });
@@ -306,10 +315,12 @@ export async function buildInsolvencyWorkbook(
       r.getCell(1).value = label;
       r.getCell(2).value = val;
       r.getCell(3).value = ev;
+      r.getCell(1).alignment = { vertical: "middle", horizontal: "left", wrapText: true };
+      r.getCell(2).alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+      r.getCell(3).alignment = { vertical: "middle", horizontal: "left", wrapText: true };
       for (let col = 1; col <= 3; col++) {
         r.getCell(col).border = THIN;
         r.getCell(col).font = { name: FONT_NAME, size: 10 };
-        r.getCell(col).alignment = { vertical: "top", wrapText: true };
       }
       if (val === "Y") r.getCell(2).fill = Y_FILL;
       drow += 1;
