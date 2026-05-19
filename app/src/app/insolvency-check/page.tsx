@@ -446,14 +446,20 @@ export default function InsolvencyCheckPage() {
                 </div>
               </CardHeader>
               <CardContent className="overflow-x-auto">
+                {rows.length === 0 ? (
+                  <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
+                    조회된 재무 데이터가 없습니다.
+                    {fetchErrors.length > 0 && " 상단 ‘조회 실패’ 카드의 사유를 확인해주세요."}
+                  </div>
+                ) : (
                 <Table className="text-xs">
                   <TableHeader>
                     <TableRow>
                       <TableHead className="sticky left-0 bg-background z-10 min-w-[140px]">고객명</TableHead>
-                      <TableHead>설립일</TableHead>
+                      <TableHead className="min-w-[90px]">설립일</TableHead>
                       {rows[0]?.years.map((y, gi) => (
-                        <TableHead key={`yh-${gi}`} colSpan={4} className="text-center text-amber-700 border-l">
-                          {y}년 (백만)
+                        <TableHead key={`yh-${gi}`} colSpan={8} className="text-center text-amber-700 border-l bg-amber-50/50">
+                          {y}년 (백만원)
                         </TableHead>
                       ))}
                       {FLAG_LABELS.map((f) => (
@@ -468,10 +474,14 @@ export default function InsolvencyCheckPage() {
                       <TableHead colSpan={2} className="sticky left-0 bg-background z-10"></TableHead>
                       {rows[0]?.years.map((_, gi) => (
                         <Fragment key={`subh-${gi}`}>
-                          <TableHead className="text-muted-foreground border-l text-right">자산</TableHead>
-                          <TableHead className="text-muted-foreground text-right">차입금</TableHead>
-                          <TableHead className="text-muted-foreground text-right">매출</TableHead>
-                          <TableHead className="text-muted-foreground text-right">순익</TableHead>
+                          <TableHead className="text-muted-foreground border-l text-right text-[11px]">자산</TableHead>
+                          <TableHead className="text-muted-foreground text-right text-[11px]">부채</TableHead>
+                          <TableHead className="text-muted-foreground text-right text-[11px]">자본</TableHead>
+                          <TableHead className="text-muted-foreground text-right text-[11px]">차입금</TableHead>
+                          <TableHead className="text-muted-foreground text-right text-[11px]">매출</TableHead>
+                          <TableHead className="text-muted-foreground text-right text-[11px]">영업손익</TableHead>
+                          <TableHead className="text-muted-foreground text-right text-[11px]">이자비용</TableHead>
+                          <TableHead className="text-muted-foreground text-right text-[11px]">순익</TableHead>
                         </Fragment>
                       ))}
                       {FLAG_LABELS.map((f) => (
@@ -488,13 +498,19 @@ export default function InsolvencyCheckPage() {
                           <TableCell className="text-muted-foreground">{r.estDt}</TableCell>
                           {r.years.map((y, gi) => {
                             const yc = r.cells.byYear[y];
-                            const neg = yc?.netIncome !== undefined && yc.netIncome < 0;
+                            const opNeg = yc?.operatingIncome !== undefined && yc.operatingIncome < 0;
+                            const niNeg = yc?.netIncome !== undefined && yc.netIncome < 0;
+                            const equityNeg = yc?.totalEquity !== undefined && yc.totalEquity < 0;
                             return (
                               <Fragment key={`yc-${gi}`}>
-                                <TableCell className="text-right border-l">{fmtNum(yc?.totalAssets)}</TableCell>
-                                <TableCell className="text-right">{fmtNum(yc?.borrowings)}</TableCell>
-                                <TableCell className="text-right">{fmtNum(yc?.revenue)}</TableCell>
-                                <TableCell className={`text-right ${neg ? "text-red-600 font-medium" : ""}`}>
+                                <TableCell className="text-right border-l whitespace-nowrap">{fmtNum(yc?.totalAssets)}</TableCell>
+                                <TableCell className="text-right whitespace-nowrap">{fmtNum(yc?.totalLiab)}</TableCell>
+                                <TableCell className={`text-right whitespace-nowrap ${equityNeg ? "text-red-600 font-medium" : ""}`}>{fmtNum(yc?.totalEquity)}</TableCell>
+                                <TableCell className="text-right whitespace-nowrap">{fmtNum(yc?.borrowings)}</TableCell>
+                                <TableCell className="text-right whitespace-nowrap">{fmtNum(yc?.revenue)}</TableCell>
+                                <TableCell className={`text-right whitespace-nowrap ${opNeg ? "text-red-600 font-medium" : ""}`}>{fmtNum(yc?.operatingIncome)}</TableCell>
+                                <TableCell className="text-right whitespace-nowrap">{fmtNum(yc?.interestExpense)}</TableCell>
+                                <TableCell className={`text-right whitespace-nowrap ${niNeg ? "text-red-600 font-medium" : ""}`}>
                                   {fmtNum(yc?.netIncome)}
                                 </TableCell>
                               </Fragment>
@@ -518,6 +534,7 @@ export default function InsolvencyCheckPage() {
                     })}
                   </TableBody>
                 </Table>
+                )}
                 <p className="mt-3 text-xs text-muted-foreground">
                   <FileSpreadsheet className="inline size-3 mr-1" />
                   Excel 출력 시 PDF 양식과 동일한 가로형 35열로 변환됩니다. &quot;자동판정근거&quot; 보조 시트에 4개 룰의 상세 evidence가 포함됩니다.
